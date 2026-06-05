@@ -117,6 +117,7 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
         if from_wait:
             _move_to_failed(phone)
         await database.insert_login_log(phone=phone, result="failed", reason="缺少 api_id 或 api_hash")
+        await database.update_import_account_status(phone, "failed", reason="缺少 api_id 或 api_hash")
         await notify.send_notification("登录失败", f"账号 +{phone}\n原因: 缺少 api_id 或 api_hash")
         return {"phone": phone, "success": False, "error": msg}
 
@@ -137,6 +138,7 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
             if from_wait:
                 _move_to_failed(phone)
             await database.insert_login_log(phone=phone, result="failed", reason="session 未授权，需要重新验证")
+            await database.update_import_account_status(phone, "failed", reason="session 未授权，需要重新验证")
             await notify.send_notification("登录失败", f"账号 +{phone}\n原因: session 未授权，需要重新验证")
             return {"phone": phone, "success": False, "error": msg}
 
@@ -205,6 +207,7 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
 
         logger.info(f"Account +{phone} logged in successfully (user_id={me.id}, nickname={nickname})")
         await database.insert_login_log(phone=phone, result="success", tg_user_id=me.id, nickname=nickname)
+        await database.update_import_account_status(phone, "online", tg_user_id=me.id, nickname=nickname, username=username)
         await notify.send_notification(
             "登录成功",
             f"账号: +{phone}\n昵称: {nickname}\n用户名: @{username or '-'}\nUser ID: {me.id}"
@@ -227,6 +230,7 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
         if from_wait:
             _move_to_failed(phone)
         await database.insert_login_log(phone=phone, result="banned", reason=error_msg)
+        await database.update_import_account_status(phone, "banned", reason=error_msg)
         await database.upsert_account(phone=phone, api_id=api_id, api_hash=api_hash, status="banned")
         await notify.send_notification("账号已被注销", f"账号: +{phone}\n原因: {error_msg}")
         return {"phone": phone, "success": False, "error": error_msg}
@@ -237,6 +241,7 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
         if from_wait:
             _move_to_failed(phone)
         await database.insert_login_log(phone=phone, result="failed", reason=error_msg)
+        await database.update_import_account_status(phone, "failed", reason=error_msg)
         await notify.send_notification("登录失败", f"账号: +{phone}\n原因: {error_msg}")
         return {"phone": phone, "success": False, "error": error_msg}
 

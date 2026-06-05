@@ -73,6 +73,41 @@ CREATE TABLE IF NOT EXISTS `tg_contact` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='好友/联系人表';
 """
 
+CREATE_IMPORT_BATCH_SQL = """
+CREATE TABLE IF NOT EXISTS `tg_import_batch` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `batch_no` VARCHAR(64) NOT NULL COMMENT '批次号',
+    `file_name` VARCHAR(256) DEFAULT NULL COMMENT '导入文件名',
+    `total_count` INT DEFAULT 0 COMMENT '导入账号总数',
+    `success_count` INT DEFAULT 0 COMMENT '登录成功数',
+    `failed_count` INT DEFAULT 0 COMMENT '登录失败数',
+    `waiting_count` INT DEFAULT 0 COMMENT '等待登录数',
+    `import_time` DATETIME DEFAULT NULL COMMENT '导入时间',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY `uk_batch_no` (`batch_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账号导入批次表';
+"""
+
+CREATE_IMPORT_ACCOUNT_SQL = """
+CREATE TABLE IF NOT EXISTS `tg_import_account` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `batch_no` VARCHAR(64) NOT NULL COMMENT '批次号',
+    `phone` VARCHAR(32) NOT NULL COMMENT '手机号',
+    `status` VARCHAR(20) NOT NULL DEFAULT 'waiting' COMMENT '状态: waiting-等待登录, online-已登录, failed-登录失败, banned-已注销',
+    `reason` VARCHAR(512) DEFAULT NULL COMMENT '失败原因',
+    `tg_user_id` BIGINT DEFAULT NULL COMMENT 'TG用户ID',
+    `nickname` VARCHAR(128) DEFAULT NULL COMMENT '昵称',
+    `username` VARCHAR(64) DEFAULT NULL COMMENT '用户名',
+    `login_time` DATETIME DEFAULT NULL COMMENT '登录时间',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    INDEX `idx_batch_no` (`batch_no`),
+    INDEX `idx_phone` (`phone`),
+    INDEX `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账号导入明细表';
+"""
+
 CREATE_MESSAGE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS `tg_chat_message` (
     `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -123,6 +158,8 @@ async def init_db():
             await cur.execute(CREATE_LOGIN_LOG_SQL)
             await cur.execute(CREATE_CONTACT_TABLE_SQL)
             await cur.execute(CREATE_MESSAGE_TABLE_SQL)
+            await cur.execute(CREATE_IMPORT_BATCH_SQL)
+            await cur.execute(CREATE_IMPORT_ACCOUNT_SQL)
     logger.info("Database initialized")
 
 
@@ -217,3 +254,53 @@ async def insert_login_log(phone: str, result: str, reason: str = None,
                 VALUES (%s, %s, %s, %s, %s, %s)
             """
             await cur.execute(sql, (phone, result, reason, tg_user_id, nickname, datetime.now()))
+
+
+async def update_import_account_status(phone: str, status: str, reason: str = None,
+                                        tg_user_id: int = None, nickname: str = None,
+                                        username: str = None):
+    """Update tg_import_account status after login attempt.
+    Finds the most recent 'waiting' record for the phone and updates it.
+    Then recalculates the batch counts."""
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                # Find the most recent waiting import account record for this phone
+                await cur.execute(
+                    "SELECT id, batch_no FROM tg_import_account WHERE phone = %s AND status = 'waiting' ORDER BY id DESC LIMIT 1",
+                    (phone,)
+                )
+                row = await cur.fetchone()
+                if not row:
+                    return
+
+                import_id = row["id"]
+                batch_no = row["batch_no"]
+
+                # Update the import account record
+                await cur.execute(
+                    "UPDATE tg_import_account SET status = %s, reason = %s, tg_user_id = %s, "
+                    "nickname = %s, username = %s, login_time = %s, update_time = NOW() WHERE id = %s",
+                    (status, reason, tg_user_id, nickname, username, datetime.now(), import_id)
+                )
+
+                # Recalculate batch counts
+                await cur.execute(
+                    "SELECT "
+                    "  SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END) AS success_count, "
+                    "  SUM(CASE WHEN status IN ('failed', 'banned') THEN 1 ELSE 0 END) AS failed_count, "
+                    "  SUM(CASE WHEN status = 'waiting' THEN 1 ELSE 0 END) AS waiting_count "
+                    "FROM tg_import_account WHERE batch_no = %s",
+                    (batch_no,)
+                )
+                counts = await cur.fetchone()
+                if counts:
+                    await cur.execute(
+                        "UPDATE tg_import_batch SET success_count = %s, failed_count = %s, "
+                        "waiting_count = %s, update_time = NOW() WHERE batch_no = %s",
+                        (counts["success_count"] or 0, counts["failed_count"] or 0,
+                         counts["waiting_count"] or 0, batch_no)
+                    )
+                logger.info(f"Updated import account {phone} to {status} (batch: {batch_no})")
+    except Exception as e:
+        logger.error(f"Failed to update import account status for {phone}: {e}")
