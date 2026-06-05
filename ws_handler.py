@@ -23,10 +23,26 @@ active_connections: dict[WebSocket, dict] = {}
 
 async def websocket_endpoint(websocket: WebSocket, token: str = None):
     """Handle a WebSocket connection from the web client."""
+    # Validate token
+    import auth
+    payload = auth.validate_token(token)
+    if not payload:
+        await websocket.accept()
+        await websocket.close(code=4001, reason="Invalid or expired token")
+        return
+
     await websocket.accept()
-    connection_info = {"account_id": None, "phone": None}
+    account_id = payload.get("account_id")
+    phone = payload.get("phone")
+    connection_info = {"account_id": account_id, "phone": phone}
     active_connections[websocket] = connection_info
     event_handler = None
+
+    # Auto-register event handler if account is online
+    if phone and phone in client_manager.active_clients:
+        client = client_manager.active_clients[phone]
+        event_handler = _create_event_handler(websocket, account_id)
+        client.add_event_handler(event_handler, events.NewMessage)
 
     try:
         while True:
@@ -43,17 +59,21 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
             if msg_type == "ping":
                 await send_ws(websocket, "pong", {}, request_id)
             elif msg_type == "tg.account.switch":
-                account_id = msg_data.get("tgAccountId")
-                # Find the phone for this account
-                phone = await _get_phone_by_id(account_id)
-                if phone and phone in client_manager.active_clients:
-                    connection_info["account_id"] = account_id
-                    connection_info["phone"] = phone
-                    # Register event handler for new messages
-                    client = client_manager.active_clients[phone]
-                    event_handler = _create_event_handler(websocket, account_id)
+                # Re-register event handler if switching
+                req_account_id = msg_data.get("tgAccountId")
+                req_phone = await _get_phone_by_id(req_account_id)
+                if req_phone and req_phone in client_manager.active_clients:
+                    # Remove old handler if different account
+                    if event_handler and connection_info["phone"] and connection_info["phone"] != req_phone:
+                        old_phone = connection_info["phone"]
+                        if old_phone in client_manager.active_clients:
+                            client_manager.active_clients[old_phone].remove_event_handler(event_handler, events.NewMessage)
+                    connection_info["account_id"] = req_account_id
+                    connection_info["phone"] = req_phone
+                    client = client_manager.active_clients[req_phone]
+                    event_handler = _create_event_handler(websocket, req_account_id)
                     client.add_event_handler(event_handler, events.NewMessage)
-                    await send_ws(websocket, "tg.account.switch.ok", {"tgAccountId": account_id}, request_id)
+                    await send_ws(websocket, "tg.account.switch.ok", {"tgAccountId": req_account_id}, request_id)
                 else:
                     await send_ws(websocket, "system.error", {"message": "Account not online"}, request_id)
             elif msg_type == "tg.chat.list":

@@ -5,7 +5,7 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, Query
+from fastapi import FastAPI, WebSocket, Query, HTTPException
 from fastapi.responses import StreamingResponse
 
 import config
@@ -13,6 +13,7 @@ import database
 import client_manager
 import notify
 import ws_handler
+import auth
 
 # Setup logging
 os.makedirs(config.LOGS_DIR, exist_ok=True)
@@ -65,6 +66,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="tg-client-telethon", lifespan=lifespan)
+
+
+@app.post("/api/token")
+async def get_token(account_id: int, phone: str = ""):
+    """Generate an access token for the web client."""
+    # Verify account exists
+    accounts = await database.get_all_accounts()
+    account = next((a for a in accounts if a["id"] == account_id), None)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    token = auth.generate_token(account_id, account["phone"])
+    return {"token": token, "account_id": account_id, "phone": account["phone"]}
 
 
 @app.get("/api/status")
@@ -166,6 +179,10 @@ async def websocket_route(websocket: WebSocket, token: str = Query(default=None)
 @app.get("/api/client/tg/file")
 async def download_file(tgAccountId: int, fileId: str, token: str = None):
     """Download a media file from Telegram."""
+    # Validate token
+    if not auth.validate_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
     # Find the account
     accounts = await database.get_all_accounts()
     account = next((a for a in accounts if a["id"] == tgAccountId), None)

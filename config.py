@@ -16,6 +16,10 @@ DB_NAME = os.getenv("DB_NAME", "tg-client-server")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8534398194:AAF6CKDeS_yGeo167C4znOq9cR3porDGJa0")
 BOT_CHAT_ID = os.getenv("BOT_CHAT_ID", "-5181774632")
 
+# JWT Secret for web client authentication
+JWT_SECRET = os.getenv("JWT_SECRET", "tg-telethon-secret-key-2024")
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
+
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ACCOUNT_DIR = os.path.join(BASE_DIR, "account")
