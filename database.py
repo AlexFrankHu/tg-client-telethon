@@ -45,6 +45,64 @@ CREATE TABLE IF NOT EXISTS `{LOGIN_LOG_TABLE}` (
 """
 
 
+CREATE_CONTACT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS `tg_contact` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `tg_account_id` INT NOT NULL COMMENT '所属账号ID',
+    `user_id` BIGINT NOT NULL COMMENT 'TG用户ID',
+    `first_name` VARCHAR(128) DEFAULT NULL,
+    `last_name` VARCHAR(128) DEFAULT NULL,
+    `nickname` VARCHAR(256) DEFAULT NULL COMMENT '昵称',
+    `username` VARCHAR(64) DEFAULT NULL COMMENT '用户名',
+    `phone_number` VARCHAR(32) DEFAULT NULL COMMENT '手机号',
+    `is_mutual` TINYINT(1) DEFAULT 0 COMMENT '是否互为好友',
+    `is_bot` TINYINT(1) DEFAULT 0 COMMENT '是否机器人',
+    `is_premium` TINYINT(1) DEFAULT 0 COMMENT '是否Premium',
+    `is_verified` TINYINT(1) DEFAULT 0 COMMENT '是否认证',
+    `user_type` VARCHAR(20) DEFAULT 'regular' COMMENT '类型: regular/bot/deleted',
+    `restriction_reason` VARCHAR(512) DEFAULT NULL,
+    `bio` TEXT DEFAULT NULL,
+    `photo_small_file_id` VARCHAR(128) DEFAULT NULL,
+    `photo_big_file_id` VARCHAR(128) DEFAULT NULL,
+    `last_online_time` DATETIME DEFAULT NULL COMMENT '最后在线时间',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_account_user` (`tg_account_id`, `user_id`),
+    INDEX `idx_tg_account_id` (`tg_account_id`),
+    INDEX `idx_user_id` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='好友/联系人表';
+"""
+
+CREATE_MESSAGE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS `tg_chat_message` (
+    `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `tg_account_id` INT NOT NULL COMMENT '所属账号ID',
+    `chat_id` BIGINT NOT NULL COMMENT '聊天ID',
+    `message_id` BIGINT NOT NULL COMMENT '消息ID',
+    `sender_user_id` BIGINT DEFAULT NULL COMMENT '发送者用户ID',
+    `sender_chat_id` BIGINT DEFAULT NULL COMMENT '发送者频道ID',
+    `sender_name` VARCHAR(128) DEFAULT NULL COMMENT '发送者名称',
+    `is_outgoing` TINYINT(1) DEFAULT 0 COMMENT '是否发出',
+    `send_time` DATETIME DEFAULT NULL COMMENT '发送时间',
+    `content_type` VARCHAR(20) DEFAULT 'text' COMMENT '消息类型',
+    `text_content` TEXT DEFAULT NULL COMMENT '文本内容',
+    `media_file_id` VARCHAR(128) DEFAULT NULL,
+    `media_file_size` BIGINT DEFAULT NULL,
+    `media_mime_type` VARCHAR(64) DEFAULT NULL,
+    `media_file_name` VARCHAR(256) DEFAULT NULL,
+    `media_duration` INT DEFAULT NULL,
+    `media_width` INT DEFAULT NULL,
+    `media_height` INT DEFAULT NULL,
+    `thumbnail_file_id` VARCHAR(128) DEFAULT NULL,
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_account_chat_msg` (`tg_account_id`, `chat_id`, `message_id`),
+    INDEX `idx_tg_account_id` (`tg_account_id`),
+    INDEX `idx_chat_id` (`chat_id`),
+    INDEX `idx_send_time` (`send_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='聊天记录表';
+"""
+
+
 async def init_db():
     """Initialize database connection pool and create table if not exists."""
     global pool
@@ -63,6 +121,8 @@ async def init_db():
         async with conn.cursor() as cur:
             await cur.execute(CREATE_TABLE_SQL)
             await cur.execute(CREATE_LOGIN_LOG_SQL)
+            await cur.execute(CREATE_CONTACT_TABLE_SQL)
+            await cur.execute(CREATE_MESSAGE_TABLE_SQL)
     logger.info("Database initialized")
 
 

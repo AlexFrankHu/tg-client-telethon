@@ -13,6 +13,7 @@ from telethon.errors import (
 import config
 import database
 import notify
+import data_collector
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,9 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
             f"账号: +{phone}\n昵称: {nickname}\n用户名: @{username or '-'}\nUser ID: {me.id}"
         )
 
+        # Trigger data collection in background
+        asyncio.create_task(_run_data_sync(client, phone))
+
         return {
             "phone": phone,
             "success": True,
@@ -279,3 +283,21 @@ async def disconnect_all():
 def get_active_phones() -> list[str]:
     """Get list of currently active account phones."""
     return list(active_clients.keys())
+
+
+async def _run_data_sync(client, phone: str):
+    """Run data sync in background, catching all errors."""
+    try:
+        await data_collector.sync_contacts_and_history(client, phone)
+    except Exception as e:
+        logger.error(f"[{phone}] Data sync failed: {e}")
+
+
+async def sync_all_accounts():
+    """Sync contacts and history for all active accounts (called by scheduler)."""
+    for phone, client in list(active_clients.items()):
+        try:
+            await data_collector.sync_contacts_and_history(client, phone)
+        except Exception as e:
+            logger.error(f"[{phone}] Scheduled sync failed: {e}")
+        await asyncio.sleep(2)

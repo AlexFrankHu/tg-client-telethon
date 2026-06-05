@@ -5,12 +5,14 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, Query
+from fastapi.responses import StreamingResponse
 
 import config
 import database
 import client_manager
 import notify
+import ws_handler
 
 # Setup logging
 os.makedirs(config.LOGS_DIR, exist_ok=True)
@@ -43,7 +45,17 @@ async def lifespan(app: FastAPI):
             f"tg-client-telethon 已启动\n登录账号: {online_count}/{len(results)} 个在线"
         )
 
+    # Start periodic sync task (every hour)
+    sync_task = asyncio.create_task(_periodic_sync())
+
     yield
+
+    # Cancel sync task
+    sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
 
     # Shutdown
     logger.info("Shutting down...")
@@ -78,13 +90,26 @@ async def login_wait_accounts():
 
 @app.post("/api/login/{phone}")
 async def login_single_account(phone: str):
-    """Login a specific account from waitLogin directory."""
+    """Login a specific account (check waitLogin first, then loginSuccess)."""
+    # Check if already online
+    if phone in client_manager.active_clients:
+        return {"success": True, "phone": phone, "message": "Already online"}
+
+    # Try waitLogin first
     accounts = client_manager.get_wait_login_accounts()
     target = next((a for a in accounts if a["phone"] == phone), None)
-    if not target:
-        return {"success": False, "error": f"Account {phone} not found in waitLogin directory"}
-    result = await client_manager.login_account(target, from_wait=True)
-    return result
+    if target:
+        result = await client_manager.login_account(target, from_wait=True)
+        return result
+
+    # Try loginSuccess
+    accounts = client_manager.get_login_success_accounts()
+    target = next((a for a in accounts if a["phone"] == phone), None)
+    if target:
+        result = await client_manager.login_account(target, from_wait=False)
+        return result
+
+    return {"success": False, "error": f"Account {phone} not found in waitLogin or loginSuccess"}
 
 
 @app.post("/api/logout/{phone}")
@@ -125,11 +150,84 @@ async def list_wait_accounts():
     }
 
 
+@app.post("/api/sync")
+async def trigger_sync():
+    """Manually trigger data sync for all active accounts."""
+    asyncio.create_task(client_manager.sync_all_accounts())
+    return {"success": True, "message": "Sync triggered"}
+
+
+@app.websocket("/ws/client")
+async def websocket_route(websocket: WebSocket, token: str = Query(default=None)):
+    """WebSocket endpoint for web client."""
+    await ws_handler.websocket_endpoint(websocket, token)
+
+
+@app.get("/api/client/tg/file")
+async def download_file(tgAccountId: int, fileId: str, token: str = None):
+    """Download a media file from Telegram."""
+    # Find the account
+    accounts = await database.get_all_accounts()
+    account = next((a for a in accounts if a["id"] == tgAccountId), None)
+    if not account:
+        return {"error": "Account not found"}
+
+    phone = account["phone"]
+    if phone not in client_manager.active_clients:
+        return {"error": "Account not online"}
+
+    client = client_manager.active_clients[phone]
+
+    try:
+        # Download file to memory
+        from telethon.tl.types import InputPhoto, InputDocument
+        import io
+
+        # Try to find the message with this file
+        # fileId is the photo/document ID
+        file_id = int(fileId)
+
+        # Download the file
+        buffer = io.BytesIO()
+
+        # Try to iterate recent messages to find the file
+        # This is a simplified approach - we search through the client's cache
+        async for dialog in client.iter_dialogs(limit=50):
+            async for msg in client.iter_messages(dialog.entity, limit=50):
+                if msg.media:
+                    if hasattr(msg.media, 'photo') and msg.media.photo and msg.media.photo.id == file_id:
+                        await client.download_media(msg.media, buffer)
+                        buffer.seek(0)
+                        return StreamingResponse(buffer, media_type="image/jpeg")
+                    if hasattr(msg.media, 'document') and msg.media.document and msg.media.document.id == file_id:
+                        mime = msg.media.document.mime_type or "application/octet-stream"
+                        await client.download_media(msg.media, buffer)
+                        buffer.seek(0)
+                        return StreamingResponse(buffer, media_type=mime)
+
+        return {"error": "File not found"}
+    except Exception as e:
+        logger.error(f"File download error: {e}")
+        return {"error": str(e)}
+
+
 @app.post("/api/notify/test")
 async def test_notify(title: str = "测试通知", content: str = "这是一条测试消息"):
     """Test notification."""
     await notify.send_notification(title, content)
     return {"success": True, "message": "Notification sent"}
+
+
+async def _periodic_sync():
+    """Periodically sync contacts and history (every hour)."""
+    while True:
+        await asyncio.sleep(3600)  # 1 hour
+        try:
+            logger.info("Starting periodic data sync...")
+            await client_manager.sync_all_accounts()
+            logger.info("Periodic data sync complete")
+        except Exception as e:
+            logger.error(f"Periodic sync error: {e}")
 
 
 if __name__ == "__main__":
