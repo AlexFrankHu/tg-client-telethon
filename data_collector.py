@@ -139,6 +139,20 @@ async def upsert_contact(account_id: int, user: User):
         logger.error(f"Failed to upsert contact {user.id}: {e}")
 
 
+async def save_realtime_message(phone: str, event):
+    """Save a real-time incoming/outgoing message to database."""
+    try:
+        account_id = await get_account_id(phone)
+        if not account_id:
+            return
+        chat_id = event.chat_id
+        msg = event.message
+        if msg and not isinstance(msg, MessageService):
+            await upsert_message(account_id, chat_id, msg)
+    except Exception as e:
+        logger.error(f"[{phone}] save_realtime_message error: {e}")
+
+
 async def upsert_message(account_id: int, chat_id: int, msg):
     """Insert a message record (skip if exists)."""
     try:

@@ -4,7 +4,7 @@ import json
 import shutil
 import asyncio
 import logging
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError,
     AuthKeyUnregisteredError, UserDeactivatedBanError,
@@ -172,6 +172,25 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
 
         # Save to active clients
         active_clients[phone] = client
+
+        # Register a base event handler to ensure update loop is active
+        @client.on(events.NewMessage)
+        async def _base_new_message_handler(event):
+            """Base handler to ensure updates are processed and save to DB."""
+            try:
+                msg = event.message
+                if msg and not msg.out:
+                    logger.info(f"[{phone}] New incoming message from chat {event.chat_id}")
+                # Save real-time messages to database
+                asyncio.create_task(data_collector.save_realtime_message(phone, event))
+            except Exception as e:
+                logger.error(f"[{phone}] Base handler error: {e}")
+
+        # Ensure updates are being received by catching up
+        try:
+            await client.catch_up()
+        except Exception:
+            pass
 
         # Update database
         await database.upsert_account(
