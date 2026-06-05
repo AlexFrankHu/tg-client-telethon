@@ -129,6 +129,8 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
         if from_wait:
             dest_dir = os.path.join(config.LOGIN_SUCCESS_DIR, phone)
             os.makedirs(dest_dir, exist_ok=True)
+            # Create data folder for this account's cache
+            os.makedirs(os.path.join(dest_dir, "data"), exist_ok=True)
 
             # Move .json and .session files
             src_json = os.path.join(config.WAIT_LOGIN_DIR, phone + ".json")

@@ -5,10 +5,8 @@ __pycache__/
 *.session
 account/waitLogin/*
 account/loginSuccess/*
-account/data/*
 !account/waitLogin/.gitkeep
 !account/loginSuccess/.gitkeep
-!account/data/.gitkeep
 logs/*.log
 bin/app.pid
 venv/

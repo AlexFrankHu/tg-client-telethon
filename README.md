@@ -8,8 +8,7 @@ Telegram 多账号客户端管理服务（Python + Telethon），提供 REST API
 tg-client-telethon/
 ├── account/
 │   ├── waitLogin/       # 待登录账号文件（.json + .session）
-│   ├── loginSuccess/    # 登录成功账号（每个账号一个文件夹）
-│   └── data/            # 账号缓存数据
+│   └── loginSuccess/    # 登录成功账号（每个账号一个文件夹，内含 data/ 缓存目录）
 ├── bin/
 │   ├── startup.sh       # 启动
 │   ├── shutdown.sh      # 停止
