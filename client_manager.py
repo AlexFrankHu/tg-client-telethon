@@ -83,6 +83,19 @@ def get_login_success_accounts() -> list[dict]:
     return accounts
 
 
+def _move_to_failed(phone: str):
+    """Move account files from waitLogin to loginFailed directory."""
+    os.makedirs(config.LOGIN_FAILED_DIR, exist_ok=True)
+    src_json = os.path.join(config.WAIT_LOGIN_DIR, phone + ".json")
+    src_session = os.path.join(config.WAIT_LOGIN_DIR, phone + ".session")
+    dst_json = os.path.join(config.LOGIN_FAILED_DIR, phone + ".json")
+    dst_session = os.path.join(config.LOGIN_FAILED_DIR, phone + ".session")
+    if os.path.exists(src_json):
+        shutil.move(src_json, dst_json)
+    if os.path.exists(src_session):
+        shutil.move(src_session, dst_session)
+
+
 async def login_account(account: dict, from_wait: bool = True) -> dict:
     """Login a single account using Telethon.
 
@@ -100,6 +113,8 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
     if not api_id or not api_hash:
         msg = f"Account {phone}: missing api_id or api_hash"
         logger.error(msg)
+        if from_wait:
+            _move_to_failed(phone)
         await notify.send_notification("登录失败", f"账号 +{phone}\n原因: 缺少 api_id 或 api_hash")
         return {"phone": phone, "success": False, "error": msg}
 
@@ -116,8 +131,10 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
         if not await client.is_user_authorized():
             msg = f"Account {phone}: session not authorized, cannot auto-login"
             logger.warning(msg)
-            await notify.send_notification("登录失败", f"账号 +{phone}\n原因: session 未授权，需要重新验证")
             await client.disconnect()
+            if from_wait:
+                _move_to_failed(phone)
+            await notify.send_notification("登录失败", f"账号 +{phone}\n原因: session 未授权，需要重新验证")
             return {"phone": phone, "success": False, "error": msg}
 
         # Get user info
@@ -181,6 +198,8 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
     except (AuthKeyUnregisteredError, UserDeactivatedBanError) as e:
         error_msg = str(e)
         logger.error(f"Account +{phone} banned/deactivated: {error_msg}")
+        if from_wait:
+            _move_to_failed(phone)
         await database.upsert_account(phone=phone, api_id=api_id, api_hash=api_hash, status="banned")
         await notify.send_notification("账号已被注销", f"账号: +{phone}\n原因: {error_msg}")
         return {"phone": phone, "success": False, "error": error_msg}
@@ -188,6 +207,8 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Account +{phone} login failed: {error_msg}")
+        if from_wait:
+            _move_to_failed(phone)
         await notify.send_notification("登录失败", f"账号: +{phone}\n原因: {error_msg}")
         return {"phone": phone, "success": False, "error": error_msg}
 

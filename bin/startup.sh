@@ -20,6 +20,7 @@ fi
 mkdir -p "$BASE_DIR/logs"
 mkdir -p "$BASE_DIR/account/waitLogin"
 mkdir -p "$BASE_DIR/account/loginSuccess"
+mkdir -p "$BASE_DIR/account/loginFailed"
 
 # Start the application
 cd "$BASE_DIR"
