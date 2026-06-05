@@ -189,11 +189,11 @@ async def upsert_message(account_id: int, chat_id: int, msg):
             if isinstance(msg.media, MessageMediaPhoto):
                 content_type = "photo"
                 if msg.media.photo and isinstance(msg.media.photo, Photo):
-                    media_file_id = str(msg.media.photo.id)
+                    media_file_id = msg.media.photo.id
             elif isinstance(msg.media, MessageMediaDocument):
                 doc = msg.media.document
                 if isinstance(doc, Document):
-                    media_file_id = str(doc.id)
+                    media_file_id = doc.id
                     media_file_size = doc.size
                     media_mime_type = doc.mime_type
                     for attr in doc.attributes:

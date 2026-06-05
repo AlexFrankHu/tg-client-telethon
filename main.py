@@ -177,7 +177,8 @@ async def websocket_route(websocket: WebSocket, token: str = Query(default=None)
 
 
 @app.get("/api/client/tg/file")
-async def download_file(tgAccountId: int, fileId: str, token: str = None):
+async def download_file(tgAccountId: int, fileId: str, token: str = None,
+                        chatId: int = None, messageId: int = None):
     """Download a media file from Telegram."""
     # Validate token
     if not auth.validate_token(token):
@@ -187,30 +188,50 @@ async def download_file(tgAccountId: int, fileId: str, token: str = None):
     accounts = await database.get_all_accounts()
     account = next((a for a in accounts if a["id"] == tgAccountId), None)
     if not account:
-        return {"error": "Account not found"}
+        raise HTTPException(status_code=404, detail="Account not found")
 
     phone = account["phone"]
     if phone not in client_manager.active_clients:
-        return {"error": "Account not online"}
+        raise HTTPException(status_code=503, detail="Account not online")
 
     client = client_manager.active_clients[phone]
 
     try:
-        # Download file to memory
-        from telethon.tl.types import InputPhoto, InputDocument
         import io
-
-        # Try to find the message with this file
-        # fileId is the photo/document ID
         file_id = int(fileId)
-
-        # Download the file
         buffer = io.BytesIO()
 
-        # Try to iterate recent messages to find the file
-        # This is a simplified approach - we search through the client's cache
-        async for dialog in client.iter_dialogs(limit=50):
-            async for msg in client.iter_messages(dialog.entity, limit=50):
+        # Method 1: If chatId and messageId provided, get message directly
+        if chatId and messageId:
+            msgs = await client.get_messages(chatId, ids=[messageId])
+            if msgs and msgs[0] and msgs[0].media:
+                msg = msgs[0]
+                mime = "image/jpeg"
+                if hasattr(msg.media, 'document') and msg.media.document:
+                    mime = msg.media.document.mime_type or "application/octet-stream"
+                await client.download_media(msg.media, buffer)
+                buffer.seek(0)
+                return StreamingResponse(buffer, media_type=mime)
+
+        # Method 2: Look up chatId and messageId from database by fileId
+        chat_msg = await database.get_message_by_file_id(tgAccountId, fileId)
+        if chat_msg:
+            try:
+                msgs = await client.get_messages(chat_msg["chat_id"], ids=[chat_msg["message_id"]])
+                if msgs and msgs[0] and msgs[0].media:
+                    msg = msgs[0]
+                    mime = "image/jpeg"
+                    if hasattr(msg.media, 'document') and msg.media.document:
+                        mime = msg.media.document.mime_type or "application/octet-stream"
+                    await client.download_media(msg.media, buffer)
+                    buffer.seek(0)
+                    return StreamingResponse(buffer, media_type=mime)
+            except Exception as e:
+                logger.warning(f"Failed to download via DB lookup: {e}")
+
+        # Method 3: Fallback - scan recent messages (limited scope)
+        async for dialog in client.iter_dialogs(limit=20):
+            async for msg in client.iter_messages(dialog.entity, limit=30):
                 if msg.media:
                     if hasattr(msg.media, 'photo') and msg.media.photo and msg.media.photo.id == file_id:
                         await client.download_media(msg.media, buffer)
@@ -222,10 +243,12 @@ async def download_file(tgAccountId: int, fileId: str, token: str = None):
                         buffer.seek(0)
                         return StreamingResponse(buffer, media_type=mime)
 
-        return {"error": "File not found"}
+        raise HTTPException(status_code=404, detail="File not found")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"File download error: {e}")
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/notify/test")

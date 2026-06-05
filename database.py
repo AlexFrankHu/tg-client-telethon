@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS `tg_chat_message` (
     `send_time` DATETIME DEFAULT NULL COMMENT '发送时间',
     `content_type` VARCHAR(20) DEFAULT 'text' COMMENT '消息类型',
     `text_content` TEXT DEFAULT NULL COMMENT '文本内容',
-    `media_file_id` VARCHAR(128) DEFAULT NULL,
+    `media_file_id` BIGINT DEFAULT NULL COMMENT '媒体文件ID',
     `media_file_size` BIGINT DEFAULT NULL,
     `media_mime_type` VARCHAR(64) DEFAULT NULL,
     `media_file_name` VARCHAR(256) DEFAULT NULL,
@@ -180,6 +180,21 @@ async def get_account_by_phone(phone: str):
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute(
                 f"SELECT * FROM `{TABLE_NAME}` WHERE phone = %s", (phone,)
+            )
+            return await cur.fetchone()
+
+
+async def get_message_by_file_id(tg_account_id: int, file_id):
+    """Get a message record by media_file_id to find chat_id and message_id."""
+    try:
+        file_id_int = int(file_id)
+    except (ValueError, TypeError):
+        return None
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(
+                "SELECT chat_id, message_id FROM `tg_chat_message` WHERE tg_account_id = %s AND media_file_id = %s LIMIT 1",
+                (tg_account_id, file_id_int)
             )
             return await cur.fetchone()
 
