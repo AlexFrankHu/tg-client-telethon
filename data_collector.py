@@ -44,13 +44,13 @@ async def sync_contacts_and_history(client, phone: str):
     except Exception as e:
         logger.error(f"[{phone}] Failed to get contacts: {e}")
 
-    # 2. Collect chats and history
+    # 2. Collect ALL chats (not just friends) and history
     try:
-        dialogs = await client.get_dialogs(limit=100)
-        logger.info(f"[{phone}] Got {len(dialogs)} dialogs")
+        dialogs = await client.get_dialogs(limit=None)  # Get ALL dialogs
+        logger.info(f"[{phone}] Got {len(dialogs)} dialogs (all chats)")
         for dialog in dialogs:
             if dialog.is_user:
-                # Save the user as contact too
+                # Save the user as contact record
                 entity = dialog.entity
                 if isinstance(entity, User):
                     await upsert_contact(account_id, entity)
@@ -139,8 +139,9 @@ async def upsert_contact(account_id: int, user: User):
         logger.error(f"Failed to upsert contact {user.id}: {e}")
 
 
-async def save_realtime_message(phone: str, event):
-    """Save a real-time incoming/outgoing message to database."""
+async def save_realtime_message(phone: str, event, client=None):
+    """Save a real-time incoming/outgoing message to database.
+    Also adds new chat sender to contact list if not already there."""
     try:
         account_id = await get_account_id(phone)
         if not account_id:
@@ -149,6 +150,15 @@ async def save_realtime_message(phone: str, event):
         msg = event.message
         if msg and not isinstance(msg, MessageService):
             await upsert_message(account_id, chat_id, msg)
+
+        # If we have a client, try to add the sender as a contact record
+        if client and msg and not msg.out:
+            try:
+                sender = await event.get_sender()
+                if sender and isinstance(sender, User):
+                    await upsert_contact(account_id, sender)
+            except Exception:
+                pass
     except Exception as e:
         logger.error(f"[{phone}] save_realtime_message error: {e}")
 

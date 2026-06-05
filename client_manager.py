@@ -181,8 +181,8 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
                 msg = event.message
                 if msg and not msg.out:
                     logger.info(f"[{phone}] New incoming message from chat {event.chat_id}")
-                # Save real-time messages to database
-                asyncio.create_task(data_collector.save_realtime_message(phone, event))
+                # Save real-time messages to database (pass client so it can resolve sender)
+                asyncio.create_task(data_collector.save_realtime_message(phone, event, client))
             except Exception as e:
                 logger.error(f"[{phone}] Base handler error: {e}")
 
@@ -313,9 +313,38 @@ async def _run_data_sync(client, phone: str):
 
 
 async def sync_all_accounts():
-    """Sync contacts and history for all active accounts (called by scheduler)."""
+    """Sync contacts and history for all active accounts (called by scheduler).
+    Also checks if accounts are still connected and updates status if not."""
     for phone, client in list(active_clients.items()):
         try:
+            # Check if account is still connected
+            if not client.is_connected():
+                logger.warning(f"[{phone}] Client disconnected, updating status to offline")
+                active_clients.pop(phone, None)
+                await database.update_status(phone, "offline")
+                continue
+
+            # Verify the session is still authorized
+            try:
+                me = await client.get_me()
+                if not me:
+                    logger.warning(f"[{phone}] Session no longer authorized, updating status")
+                    active_clients.pop(phone, None)
+                    await database.update_status(phone, "offline")
+                    continue
+            except (AuthKeyUnregisteredError, UserDeactivatedBanError) as e:
+                logger.warning(f"[{phone}] Account banned/deactivated: {e}")
+                active_clients.pop(phone, None)
+                await database.update_status(phone, "banned")
+                await notify.send_notification("账号状态异常", f"账号: +{phone}\n原因: {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"[{phone}] Failed to verify account: {e}")
+                active_clients.pop(phone, None)
+                await database.update_status(phone, "offline")
+                continue
+
+            # Sync data
             await data_collector.sync_contacts_and_history(client, phone)
         except Exception as e:
             logger.error(f"[{phone}] Scheduled sync failed: {e}")
