@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 pool = None
 
 TABLE_NAME = "tg_telethon_account"
+LOGIN_LOG_TABLE = "tg_login_log"
 
 CREATE_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS `{TABLE_NAME}` (
@@ -25,6 +26,22 @@ CREATE TABLE IF NOT EXISTS `{TABLE_NAME}` (
     `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     UNIQUE KEY `uk_phone` (`phone`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Telethon账号管理表';
+"""
+
+CREATE_LOGIN_LOG_SQL = f"""
+CREATE TABLE IF NOT EXISTS `{LOGIN_LOG_TABLE}` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `phone` VARCHAR(32) NOT NULL COMMENT '手机号',
+    `result` VARCHAR(20) NOT NULL COMMENT '登录结果: success-成功, failed-失败, banned-已被注销',
+    `reason` VARCHAR(512) DEFAULT NULL COMMENT '失败原因',
+    `tg_user_id` BIGINT DEFAULT NULL COMMENT 'Telegram用户ID',
+    `nickname` VARCHAR(128) DEFAULT NULL COMMENT '昵称',
+    `login_time` DATETIME NOT NULL COMMENT '登录时间',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    INDEX `idx_phone` (`phone`),
+    INDEX `idx_login_time` (`login_time`),
+    INDEX `idx_result` (`result`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='登录日志表';
 """
 
 
@@ -45,6 +62,7 @@ async def init_db():
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(CREATE_TABLE_SQL)
+            await cur.execute(CREATE_LOGIN_LOG_SQL)
     logger.info("Database initialized")
 
 
@@ -104,3 +122,23 @@ async def get_account_by_phone(phone: str):
                 f"SELECT * FROM `{TABLE_NAME}` WHERE phone = %s", (phone,)
             )
             return await cur.fetchone()
+
+
+async def insert_login_log(phone: str, result: str, reason: str = None,
+                           tg_user_id: int = None, nickname: str = None):
+    """Insert a login log record.
+
+    Args:
+        phone: Account phone number.
+        result: Login result - 'success', 'failed', or 'banned'.
+        reason: Failure reason (optional).
+        tg_user_id: Telegram user ID (on success).
+        nickname: User nickname (on success).
+    """
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            sql = f"""
+                INSERT INTO `{LOGIN_LOG_TABLE}` (phone, result, reason, tg_user_id, nickname, login_time)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            await cur.execute(sql, (phone, result, reason, tg_user_id, nickname, datetime.now()))
