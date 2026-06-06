@@ -84,6 +84,23 @@ def get_login_success_accounts() -> list[dict]:
     return accounts
 
 
+def _build_device_kwargs(data: dict) -> dict:
+    """Extract device fingerprint parameters from account JSON data."""
+    kwargs = {}
+    device_model = data.get("device_model") or data.get("device")
+    if device_model:
+        kwargs["device_model"] = device_model
+    if data.get("system_version"):
+        kwargs["system_version"] = data["system_version"]
+    if data.get("app_version"):
+        kwargs["app_version"] = data["app_version"]
+    if data.get("lang_pack"):
+        kwargs["lang_code"] = data["lang_pack"]
+    if data.get("system_lang_pack"):
+        kwargs["system_lang_code"] = data["system_lang_pack"]
+    return kwargs
+
+
 def _move_to_failed(phone: str):
     """Move account files from waitLogin to loginFailed directory."""
     os.makedirs(config.LOGIN_FAILED_DIR, exist_ok=True)
@@ -127,8 +144,11 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
     else:
         session_path = os.path.join(account["folder_path"], phone)
 
+    # Build device fingerprint kwargs from json data
+    device_kwargs = _build_device_kwargs(account.get("data", {}))
+
     try:
-        client = TelegramClient(session_path, api_id, api_hash)
+        client = TelegramClient(session_path, api_id, api_hash, **device_kwargs)
         await client.connect()
 
         if not await client.is_user_authorized():
@@ -169,7 +189,7 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
             # After move, we need to reconnect from new location
             await client.disconnect()
             new_session_path = os.path.join(dest_dir, phone)
-            client = TelegramClient(new_session_path, api_id, api_hash)
+            client = TelegramClient(new_session_path, api_id, api_hash, **device_kwargs)
             await client.connect()
 
         # Save to active clients
