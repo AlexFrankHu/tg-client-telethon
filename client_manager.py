@@ -140,6 +140,15 @@ async def login_account_by_phone(phone: str) -> dict:
     proxy_kwargs = _build_proxy_kwargs(account_row)
     proxy_url = account_row.get("proxy_url") if account_row else None
 
+    # Proxy is required for all login operations
+    if not proxy_kwargs:
+        msg = f"Account {phone}: 未配置代理IP，禁止登录"
+        logger.warning(msg)
+        await database.insert_login_log(phone=phone, result="failed", reason="未配置代理IP，禁止登录")
+        await database.update_account_status(phone, "failed")
+        await database.update_import_account_status(phone, "failed", reason="未配置代理IP，禁止登录")
+        return {"phone": phone, "success": False, "error": msg}
+
     try:
         client = TelegramClient(session_path, api_id, api_hash, **device_kwargs, **proxy_kwargs)
         await client.connect()
