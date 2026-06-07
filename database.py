@@ -205,7 +205,7 @@ async def upsert_account(phone: str, api_id: int = None, api_hash: str = None,
                                     system_lang_code, datetime.now()))
 
 
-async def update_status(phone: str, status: str):
+async def update_account_status(phone: str, status: str):
     """Update account status."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -231,6 +231,18 @@ async def get_account_by_phone(phone: str):
                 f"SELECT * FROM `{TABLE_NAME}` WHERE phone = %s", (phone,)
             )
             return await cur.fetchone()
+
+
+async def get_waiting_phones_by_batch(batch_no: str) -> list[str]:
+    """Get phone numbers of waiting accounts for a specific batch."""
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(
+                f"SELECT phone FROM `{TABLE_NAME}` WHERE batch_no = %s AND status IN ('waiting', 'offline', 'failed')",
+                (batch_no,)
+            )
+            rows = await cur.fetchall()
+            return [r['phone'] for r in rows]
 
 
 async def get_message_by_file_id(tg_account_id: int, file_id):

@@ -35,8 +35,8 @@ async def lifespan(app: FastAPI):
     logger.info("Starting tg-client-telethon...")
     await database.init_db()
 
-    # Auto-login accounts in loginSuccess directory
-    results = await client_manager.login_all_success_accounts()
+    # Auto-login accounts that were previously online
+    results = await client_manager.login_all_db_accounts()
     online_count = sum(1 for r in results if r.get("success"))
     logger.info(f"Startup login complete: {online_count}/{len(results)} accounts online")
 
@@ -90,10 +90,10 @@ async def status():
     }
 
 
-@app.post("/api/login/wait")
-async def login_wait_accounts():
-    """Login all accounts in waitLogin directory."""
-    results = await client_manager.login_all_wait_accounts()
+@app.post("/api/login/batch/{batch_no}")
+async def login_batch_accounts(batch_no: str):
+    """Login all waiting accounts in a specific batch."""
+    results = await client_manager.login_batch(batch_no)
     return {
         "total": len(results),
         "success": sum(1 for r in results if r.get("success")),
@@ -103,26 +103,9 @@ async def login_wait_accounts():
 
 @app.post("/api/login/{phone}")
 async def login_single_account(phone: str):
-    """Login a specific account (check waitLogin first, then loginSuccess)."""
-    # Check if already online
-    if phone in client_manager.active_clients:
-        return {"success": True, "phone": phone, "message": "Already online"}
-
-    # Try waitLogin first
-    accounts = client_manager.get_wait_login_accounts()
-    target = next((a for a in accounts if a["phone"] == phone), None)
-    if target:
-        result = await client_manager.login_account(target, from_wait=True)
-        return result
-
-    # Try loginSuccess
-    accounts = client_manager.get_login_success_accounts()
-    target = next((a for a in accounts if a["phone"] == phone), None)
-    if target:
-        result = await client_manager.login_account(target, from_wait=False)
-        return result
-
-    return {"success": False, "error": f"Account {phone} not found in waitLogin or loginSuccess"}
+    """Login a specific account by phone number."""
+    result = await client_manager.login_account_by_phone(phone)
+    return result
 
 
 @app.post("/api/logout/{phone}")
@@ -155,11 +138,12 @@ async def list_active_accounts():
 
 @app.get("/api/accounts/wait")
 async def list_wait_accounts():
-    """List accounts waiting to login."""
-    accounts = client_manager.get_wait_login_accounts()
+    """List accounts waiting to login (from database)."""
+    accounts = await database.get_all_accounts()
+    waiting = [a for a in accounts if a.get("status") in ("waiting", "offline", "failed")]
     return {
-        "accounts": [{"phone": a["phone"], "api_id": a.get("api_id")} for a in accounts],
-        "count": len(accounts),
+        "accounts": [{"phone": a["phone"], "status": a.get("status")} for a in waiting],
+        "count": len(waiting),
     }
 
 

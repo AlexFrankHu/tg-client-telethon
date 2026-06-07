@@ -23,7 +23,4 @@ JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ACCOUNT_DIR = os.path.join(BASE_DIR, "account")
-WAIT_LOGIN_DIR = os.path.join(ACCOUNT_DIR, "waitLogin")
-LOGIN_SUCCESS_DIR = os.path.join(ACCOUNT_DIR, "loginSuccess")
-LOGIN_FAILED_DIR = os.path.join(ACCOUNT_DIR, "loginFailed")
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
