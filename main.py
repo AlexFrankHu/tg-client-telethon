@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, WebSocket, Query, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 import config
 import database
@@ -244,6 +245,94 @@ async def download_file(tgAccountId: int, fileId: str, token: str = None,
     except Exception as e:
         logger.error(f"File download error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class ProxyTestRequest(BaseModel):
+    proxy_url: str
+
+
+@app.post("/api/proxy/test")
+async def test_proxy(req: ProxyTestRequest):
+    """Test a proxy IP - connectivity, latency, real IP, geo location."""
+    import time
+    import re
+    import aiohttp
+    import python_socks
+
+    proxy_url = req.proxy_url.strip()
+    result = {
+        "proxy_url": proxy_url,
+        "connected": False,
+        "latency_ms": None,
+        "real_ip": None,
+        "geo": None,
+        "error": None,
+    }
+
+    try:
+        # Parse proxy URL
+        pattern = r'^(socks5|socks4|http|https)://(?:([^:]+):([^@]+)@)?([^:]+):(\d+)$'
+        m = re.match(pattern, proxy_url)
+        if not m:
+            result["error"] = "Invalid proxy URL format"
+            return result
+
+        protocol = m.group(1)
+        username = m.group(2)
+        password = m.group(3)
+        host = m.group(4)
+        port = int(m.group(5))
+
+        # Build connector based on protocol
+        from aiohttp_socks import ProxyConnector
+
+        if protocol in ("socks5", "socks4"):
+            proxy_type = python_socks.ProxyType.SOCKS5 if protocol == "socks5" else python_socks.ProxyType.SOCKS4
+            connector = ProxyConnector(
+                proxy_type=proxy_type,
+                host=host,
+                port=port,
+                username=username,
+                password=password,
+            )
+        else:
+            full_url = f"http://{host}:{port}"
+            if username and password:
+                full_url = f"http://{username}:{password}@{host}:{port}"
+            connector = ProxyConnector.from_url(full_url)
+
+        # Test connectivity and measure latency
+        start = time.monotonic()
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get("http://httpbin.org/ip", timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                elapsed = time.monotonic() - start
+                result["latency_ms"] = round(elapsed * 1000)
+                result["connected"] = True
+                data = await resp.json()
+                result["real_ip"] = data.get("origin", "")
+
+        # Get geo info for the IP
+        if result["real_ip"]:
+            try:
+                ip = result["real_ip"].split(",")[0].strip()
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f"http://ip-api.com/json/{ip}?lang=zh-CN", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        geo = await resp.json()
+                        if geo.get("status") == "success":
+                            result["geo"] = {
+                                "country": geo.get("country", ""),
+                                "region": geo.get("regionName", ""),
+                                "city": geo.get("city", ""),
+                                "isp": geo.get("isp", ""),
+                                "org": geo.get("org", ""),
+                            }
+            except Exception:
+                pass
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
 
 
 @app.post("/api/notify/test")
