@@ -173,13 +173,17 @@ async def close_db():
 
 async def upsert_account(phone: str, api_id: int = None, api_hash: str = None,
                          tg_user_id: int = None, nickname: str = None,
-                         username: str = None, status: str = "online"):
+                         username: str = None, status: str = "online",
+                         country: str = None, device_model: str = None,
+                         system_version: str = None, app_version: str = None,
+                         lang_code: str = None, system_lang_code: str = None):
     """Insert or update account record."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             sql = f"""
-                INSERT INTO `{TABLE_NAME}` (phone, api_id, api_hash, tg_user_id, nickname, username, status, last_login_time)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO `{TABLE_NAME}` (phone, api_id, api_hash, tg_user_id, nickname, username, status,
+                    country, device_model, system_version, app_version, lang_code, system_lang_code, last_login_time)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     api_id = VALUES(api_id),
                     api_hash = VALUES(api_hash),
@@ -187,10 +191,18 @@ async def upsert_account(phone: str, api_id: int = None, api_hash: str = None,
                     nickname = VALUES(nickname),
                     username = VALUES(username),
                     status = VALUES(status),
+                    country = VALUES(country),
+                    device_model = VALUES(device_model),
+                    system_version = VALUES(system_version),
+                    app_version = VALUES(app_version),
+                    lang_code = VALUES(lang_code),
+                    system_lang_code = VALUES(system_lang_code),
                     last_login_time = VALUES(last_login_time)
             """
             await cur.execute(sql, (phone, api_id, api_hash, tg_user_id, nickname,
-                                    username, status, datetime.now()))
+                                    username, status, country, device_model,
+                                    system_version, app_version, lang_code,
+                                    system_lang_code, datetime.now()))
 
 
 async def update_status(phone: str, status: str):

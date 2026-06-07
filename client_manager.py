@@ -14,6 +14,7 @@ import config
 import database
 import notify
 import data_collector
+from phone_country import get_country_by_phone
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,9 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
         except Exception:
             pass
 
-        # Update database
+        # Update database with country and device fingerprint
+        account_data = account.get("data", {})
+        country = get_country_by_phone(phone)
         await database.upsert_account(
             phone=phone,
             api_id=api_id,
@@ -223,6 +226,12 @@ async def login_account(account: dict, from_wait: bool = True) -> dict:
             nickname=nickname,
             username=username,
             status="online",
+            country=country,
+            device_model=account_data.get("device_model") or account_data.get("device"),
+            system_version=account_data.get("system_version"),
+            app_version=account_data.get("app_version"),
+            lang_code=account_data.get("lang_pack"),
+            system_lang_code=account_data.get("system_lang_pack"),
         )
 
         logger.info(f"Account +{phone} logged in successfully (user_id={me.id}, nickname={nickname})")
