@@ -113,6 +113,13 @@ async def login_all_waiting():
     }
 
 
+@app.post("/api/login/noproxy/{phone}")
+async def login_single_account_no_proxy(phone: str):
+    """Login a specific account without proxy (for testing purposes)."""
+    result = await client_manager.login_account_by_phone(phone, no_proxy=True)
+    return result
+
+
 @app.post("/api/login/{phone}")
 async def login_single_account(phone: str):
     """Login a specific account by phone number."""

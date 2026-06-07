@@ -91,11 +91,12 @@ def _build_proxy_kwargs(account_row: dict | None) -> dict:
     }
 
 
-async def login_account_by_phone(phone: str) -> dict:
+async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
     """Login a single account by phone number.
 
     Reads .json and .session from account/ directory.
     On success, creates account/{phone}/ for cache files.
+    If no_proxy=True, skip proxy requirement check and login without proxy.
     """
     # Check if already online
     if phone in active_clients:
@@ -140,14 +141,19 @@ async def login_account_by_phone(phone: str) -> dict:
     proxy_kwargs = _build_proxy_kwargs(account_row)
     proxy_url = account_row.get("proxy_url") if account_row else None
 
-    # Proxy is required for all login operations
-    if not proxy_kwargs:
+    # Proxy is required for all login operations (unless no_proxy mode)
+    if not no_proxy and not proxy_kwargs:
         msg = f"Account {phone}: 未配置代理IP，禁止登录"
         logger.warning(msg)
         await database.insert_login_log(phone=phone, result="failed", reason="未配置代理IP，禁止登录")
         await database.update_account_status(phone, "failed")
         await database.update_import_account_status(phone, "failed", reason="未配置代理IP，禁止登录")
         return {"phone": phone, "success": False, "error": msg}
+
+    # In no_proxy mode, clear proxy settings
+    if no_proxy:
+        proxy_kwargs = {}
+        proxy_url = None
 
     try:
         client = TelegramClient(session_path, api_id, api_hash, **device_kwargs, **proxy_kwargs)
