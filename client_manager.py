@@ -63,6 +63,34 @@ def _build_device_kwargs(data: dict) -> dict:
     return kwargs
 
 
+def _build_proxy_kwargs(account_row: dict | None) -> dict:
+    """Build proxy parameter for TelegramClient from DB account row."""
+    if not account_row:
+        return {}
+    proxy_protocol = account_row.get("proxy_protocol")
+    proxy_host = account_row.get("proxy_host")
+    proxy_port = account_row.get("proxy_port")
+    if not proxy_protocol or not proxy_host or not proxy_port:
+        return {}
+
+    import socks
+    proto_map = {
+        "socks5": socks.SOCKS5,
+        "socks4": socks.SOCKS4,
+        "http": socks.HTTP,
+    }
+    proxy_type = proto_map.get(proxy_protocol.lower())
+    if proxy_type is None:
+        return {}
+
+    proxy_username = account_row.get("proxy_username") or None
+    proxy_password = account_row.get("proxy_password") or None
+
+    return {
+        "proxy": (proxy_type, proxy_host, int(proxy_port), True, proxy_username, proxy_password)
+    }
+
+
 async def login_account_by_phone(phone: str) -> dict:
     """Login a single account by phone number.
 
@@ -107,8 +135,13 @@ async def login_account_by_phone(phone: str) -> dict:
     session_path = _get_session_path(phone)
     device_kwargs = _build_device_kwargs(data)
 
+    # Get proxy info from database
+    account_row = await database.get_account_by_phone(phone)
+    proxy_kwargs = _build_proxy_kwargs(account_row)
+    proxy_url = account_row.get("proxy_url") if account_row else None
+
     try:
-        client = TelegramClient(session_path, api_id, api_hash, **device_kwargs)
+        client = TelegramClient(session_path, api_id, api_hash, **device_kwargs, **proxy_kwargs)
         await client.connect()
 
         if not await client.is_user_authorized():
@@ -195,13 +228,41 @@ async def login_account_by_phone(phone: str) -> dict:
         await notify.send_notification("账号已被注销", f"账号: +{phone}\n原因: {error_msg}")
         return {"phone": phone, "success": False, "error": error_msg}
 
+    except (ConnectionError, OSError) as e:
+        error_msg = str(e)
+        is_proxy_error = proxy_url and ("proxy" in error_msg.lower() or "socks" in error_msg.lower()
+                                        or "connection refused" in error_msg.lower()
+                                        or "timed out" in error_msg.lower())
+        if is_proxy_error:
+            logger.error(f"Account +{phone} proxy connection failed: {error_msg}")
+            await database.insert_login_log(phone=phone, result="failed", reason=f"代理连接失败: {error_msg}")
+            await database.update_account_status(phone, "failed")
+            await database.update_import_account_status(phone, "failed", reason=f"代理连接失败: {error_msg}")
+            await notify.send_notification("代理连接失败", f"账号: +{phone}\n代理: {proxy_url}\n原因: {error_msg}")
+            return {"phone": phone, "success": False, "error": f"代理连接失败: {error_msg}"}
+        else:
+            logger.error(f"Account +{phone} login failed: {error_msg}")
+            await database.insert_login_log(phone=phone, result="failed", reason=error_msg)
+            await database.update_account_status(phone, "failed")
+            await database.update_import_account_status(phone, "failed", reason=error_msg)
+            await notify.send_notification("登录失败", f"账号: +{phone}\n原因: {error_msg}")
+            return {"phone": phone, "success": False, "error": error_msg}
+
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Account +{phone} login failed: {error_msg}")
-        await database.insert_login_log(phone=phone, result="failed", reason=error_msg)
-        await database.update_account_status(phone, "failed")
-        await database.update_import_account_status(phone, "failed", reason=error_msg)
-        await notify.send_notification("登录失败", f"账号: +{phone}\n原因: {error_msg}")
+        is_proxy_error = proxy_url and ("proxy" in error_msg.lower() or "socks" in error_msg.lower())
+        if is_proxy_error:
+            logger.error(f"Account +{phone} proxy error: {error_msg}")
+            await database.insert_login_log(phone=phone, result="failed", reason=f"代理错误: {error_msg}")
+            await database.update_account_status(phone, "failed")
+            await database.update_import_account_status(phone, "failed", reason=f"代理错误: {error_msg}")
+            await notify.send_notification("代理连接失败", f"账号: +{phone}\n代理: {proxy_url}\n原因: {error_msg}")
+        else:
+            logger.error(f"Account +{phone} login failed: {error_msg}")
+            await database.insert_login_log(phone=phone, result="failed", reason=error_msg)
+            await database.update_account_status(phone, "failed")
+            await database.update_import_account_status(phone, "failed", reason=error_msg)
+            await notify.send_notification("登录失败", f"账号: +{phone}\n原因: {error_msg}")
         return {"phone": phone, "success": False, "error": error_msg}
 
 
