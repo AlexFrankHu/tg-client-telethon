@@ -71,13 +71,26 @@ async def collect_chat_history(client, account_id: int, chat_id: int, limit: int
     try:
         messages = await client.get_messages(chat_id, limit=limit)
         count = 0
+        last_send_time = None
+        last_receive_time = None
         for msg in messages:
             if isinstance(msg, MessageService):
                 continue
             await upsert_message(account_id, chat_id, msg)
             count += 1
+            # Track last send/receive times from history
+            if msg.date:
+                if msg.out:
+                    if last_send_time is None or msg.date > last_send_time:
+                        last_send_time = msg.date
+                else:
+                    if last_receive_time is None or msg.date > last_receive_time:
+                        last_receive_time = msg.date
         if count > 0:
             logger.debug(f"  Collected {count} messages for chat {chat_id}")
+        # Update last_send_time / last_receive_time for the contact
+        if last_send_time or last_receive_time:
+            await update_contact_last_times(account_id, chat_id, last_send_time, last_receive_time)
     except Exception as e:
         logger.error(f"  Failed to collect history for chat {chat_id}: {e}")
 
@@ -139,6 +152,29 @@ async def upsert_contact(account_id: int, user: User):
         logger.error(f"Failed to upsert contact {user.id}: {e}")
 
 
+async def update_contact_last_times(account_id: int, chat_id: int, last_send=None, last_receive=None):
+    """Update last_send_time and/or last_receive_time for a contact.
+    Only updates if the new time is more recent than the existing value."""
+    try:
+        async with database.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                updates = []
+                params = []
+                if last_send is not None:
+                    updates.append("last_send_time = CASE WHEN last_send_time IS NULL OR last_send_time < %s THEN %s ELSE last_send_time END")
+                    params.extend([last_send, last_send])
+                if last_receive is not None:
+                    updates.append("last_receive_time = CASE WHEN last_receive_time IS NULL OR last_receive_time < %s THEN %s ELSE last_receive_time END")
+                    params.extend([last_receive, last_receive])
+                if not updates:
+                    return
+                sql = f"UPDATE `{CONTACT_TABLE}` SET {', '.join(updates)} WHERE tg_account_id = %s AND user_id = %s"
+                params.extend([account_id, chat_id])
+                await cur.execute(sql, params)
+    except Exception as e:
+        logger.error(f"Failed to update contact last times for account {account_id}, chat {chat_id}: {e}")
+
+
 async def save_realtime_message(phone: str, event, client=None):
     """Save a real-time incoming/outgoing message to database.
     Also adds new chat sender to contact list if not already there."""
@@ -150,6 +186,12 @@ async def save_realtime_message(phone: str, event, client=None):
         msg = event.message
         if msg and not isinstance(msg, MessageService):
             await upsert_message(account_id, chat_id, msg)
+            # Update last_send_time or last_receive_time
+            if msg.date:
+                if msg.out:
+                    await update_contact_last_times(account_id, chat_id, last_send=msg.date, last_receive=None)
+                else:
+                    await update_contact_last_times(account_id, chat_id, last_send=None, last_receive=msg.date)
 
         # If we have a client, try to add the sender as a contact record
         if client and msg and not msg.out:

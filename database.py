@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS `tg_contact` (
     `photo_small_file_id` VARCHAR(128) DEFAULT NULL,
     `photo_big_file_id` VARCHAR(128) DEFAULT NULL,
     `last_online_time` DATETIME DEFAULT NULL COMMENT '最后在线时间',
+    `last_send_time` DATETIME DEFAULT NULL COMMENT '最后发送时间',
+    `last_receive_time` DATETIME DEFAULT NULL COMMENT '最后接收时间',
     `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
     `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY `uk_account_user` (`tg_account_id`, `user_id`),
