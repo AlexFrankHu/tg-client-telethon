@@ -127,6 +127,26 @@ async def logout_account(phone: str):
     return result
 
 
+@app.post("/api/logout/batch/{batch_no}")
+async def logout_batch_accounts(batch_no: str):
+    """Logout all online accounts in a specific batch."""
+    results = await client_manager.logout_batch(batch_no)
+    return {
+        "total": len(results),
+        "results": results,
+    }
+
+
+@app.post("/api/logout/all")
+async def logout_all_online():
+    """Logout all online accounts."""
+    results = await client_manager.logout_all_online()
+    return {
+        "total": len(results),
+        "results": results,
+    }
+
+
 @app.get("/api/accounts")
 async def list_accounts():
     """List all accounts from database."""

@@ -284,6 +284,30 @@ async def logout_account(phone: str) -> dict:
     return {"phone": phone, "status": "offline"}
 
 
+async def logout_batch(batch_no: str) -> list[dict]:
+    """Logout all online accounts in a specific batch."""
+    accounts = await database.get_all_accounts()
+    batch_accounts = [a for a in accounts if a.get("batch_no") == batch_no and a.get("status") == "online"]
+
+    results = []
+    for acc in batch_accounts:
+        phone = acc["phone"]
+        result = await logout_account(phone)
+        results.append(result)
+
+    return results
+
+
+async def logout_all_online() -> list[dict]:
+    """Logout all online accounts."""
+    results = []
+    for phone in list(active_clients.keys()):
+        result = await logout_account(phone)
+        results.append(result)
+
+    return results
+
+
 async def disconnect_all():
     """Disconnect all active clients."""
     for phone, client in list(active_clients.items()):
