@@ -245,6 +245,31 @@ async def login_all_db_accounts() -> list[dict]:
     return results
 
 
+async def login_all_waiting_accounts() -> list[dict]:
+    """Login all accounts with status waiting/offline/failed."""
+    accounts = await database.get_all_accounts()
+    waiting = [a for a in accounts if a.get("status") in ("waiting", "offline", "failed")]
+
+    if not waiting:
+        logger.info("No waiting accounts to login")
+        return []
+
+    results = []
+    for acc in waiting:
+        phone = acc["phone"]
+        if phone in active_clients:
+            continue
+        if _has_account_files(phone):
+            result = await login_account_by_phone(phone)
+            results.append(result)
+            await asyncio.sleep(1)
+        else:
+            logger.warning(f"Account {phone} has no files, skipping")
+            results.append({"phone": phone, "success": False, "error": "files missing"})
+
+    return results
+
+
 async def logout_account(phone: str) -> dict:
     """Disconnect and mark account as offline."""
     client = active_clients.pop(phone, None)

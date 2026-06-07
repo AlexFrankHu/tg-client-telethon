@@ -101,6 +101,17 @@ async def login_batch_accounts(batch_no: str):
     }
 
 
+@app.post("/api/login/wait")
+async def login_all_waiting():
+    """Login all waiting/offline/failed accounts."""
+    results = await client_manager.login_all_waiting_accounts()
+    return {
+        "total": len(results),
+        "success": sum(1 for r in results if r.get("success")),
+        "results": results,
+    }
+
+
 @app.post("/api/login/{phone}")
 async def login_single_account(phone: str):
     """Login a specific account by phone number."""
