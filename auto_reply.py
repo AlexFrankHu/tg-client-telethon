@@ -219,14 +219,23 @@ async def _get_reply_content(state: int, my_nickname: str,
             "customer_name": customer_name,
             "chat_context": chat_context,
         }
+        logger.info(f"[AutoReply] 请求地址: {REPLY_API_URL}")
+        logger.info(f"[AutoReply] 请求参数: state={state}, agent_gender=1, customer_gender=2, "
+                     f"my_nickname={my_nickname}, customer_name={customer_name}")
+        logger.info(f"[AutoReply] chat_context:\n{chat_context}")
+
         async with httpx.AsyncClient(timeout=30) as http_client:
             resp = await http_client.post(REPLY_API_URL, json=body)
+            logger.info(f"[AutoReply] 响应状态码: {resp.status_code}")
+            logger.info(f"[AutoReply] 响应内容: {resp.text}")
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("reply")
-            logger.warning(f"Reply API {resp.status_code}: {resp.text[:200]}")
+                reply = data.get("reply")
+                logger.info(f"[AutoReply] 解析回复内容: {reply}")
+                return reply
+            logger.warning(f"[AutoReply] API返回非200: {resp.status_code}, body={resp.text[:500]}")
     except Exception as e:
-        logger.error(f"Reply API error: {e}")
+        logger.error(f"[AutoReply] API请求异常: {e}")
     return None
 
 
