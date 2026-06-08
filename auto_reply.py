@@ -37,39 +37,58 @@ async def handle_incoming_message(phone: str, event, client):
         if not msg or msg.out:
             return
 
-        sender_id = msg.sender_id
-        if not sender_id or not hasattr(sender_id, 'user_id'):
+        user_id = msg.sender_id
+        if not user_id:
+            logger.debug(f"[{phone}] [AutoReply] 跳过: sender_id 为空")
             return
-        user_id = sender_id.user_id
+
+        logger.info(f"[{phone}] [AutoReply] 收到消息, sender_id={user_id}")
 
         # Exclude official IDs
         if user_id in OFFICIAL_IDS:
+            logger.info(f"[{phone}] [AutoReply] 跳过: 官方ID {user_id}")
             return
 
         # Exclude bots
         try:
             sender = await event.get_sender()
             if not sender or not isinstance(sender, User):
+                logger.info(f"[{phone}] [AutoReply] 跳过: sender不是User类型")
                 return
             if sender.bot:
+                logger.info(f"[{phone}] [AutoReply] 跳过: 机器人 {user_id}")
                 return
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[{phone}] [AutoReply] 获取sender失败: {e}")
             return
 
         # Account info
         account = await database.get_account_by_phone(phone)
-        if not account or not account.get('auto_reply', 1):
+        if not account:
+            logger.info(f"[{phone}] [AutoReply] 跳过: 账号不存在")
+            return
+        if not account.get('auto_reply', 1):
+            logger.info(f"[{phone}] [AutoReply] 跳过: 账号未开启自动回复")
             return
         account_id = account['id']
 
-        # Contact info
+        # Contact info — wait briefly for save_realtime_message to upsert contact
+        await asyncio.sleep(1)
         contact = await _get_contact(account_id, user_id)
-        if not contact or not contact.get('auto_reply', 1):
+        if not contact:
+            logger.info(f"[{phone}] [AutoReply] 跳过: 好友 {user_id} 不在联系人表中")
+            return
+        if not contact.get('auto_reply', 1):
+            logger.info(f"[{phone}] [AutoReply] 跳过: 好友 {user_id} 未开启自动回复")
             return
 
         # Build context & call API
         my_nickname = account.get('nickname') or phone
         friend_nickname = contact.get('nickname') or str(user_id)
+        logger.info(f"[{phone}] [AutoReply] 准备请求自动回复: state=0, "
+                    f"account_id={account_id}, user_id={user_id}, "
+                    f"my_nickname={my_nickname}, friend_nickname={friend_nickname}")
+
         chat_context = await _build_chat_context(account_id, user_id, my_nickname, friend_nickname)
 
         reply = await _get_reply_content(
@@ -81,9 +100,11 @@ async def handle_incoming_message(phone: str, event, client):
         if reply:
             await asyncio.sleep(2)  # brief delay for naturalness
             await _send_auto_reply(client, phone, account_id, user_id, reply)
-            logger.info(f"[{phone}] Auto-replied to {user_id} (state=0)")
+            logger.info(f"[{phone}] [AutoReply] 自动回复成功: user_id={user_id}, state=0")
+        else:
+            logger.warning(f"[{phone}] [AutoReply] API未返回有效回复内容")
     except Exception as e:
-        logger.error(f"[{phone}] Auto-reply incoming error: {e}")
+        logger.error(f"[{phone}] [AutoReply] 处理incoming消息异常: {e}")
 
 
 # ---------------------------------------------------------------------------

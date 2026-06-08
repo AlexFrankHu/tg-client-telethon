@@ -389,15 +389,16 @@ async def logout_all_online() -> list[dict]:
 
 
 async def disconnect_all():
-    """Disconnect all active clients."""
+    """Disconnect all active clients on shutdown.
+    Do NOT set status to offline — preserve 'online' status
+    so accounts auto-login on next startup."""
     for phone, client in list(active_clients.items()):
         try:
             await client.disconnect()
-            await database.update_account_status(phone, "offline")
         except Exception:
             pass
     active_clients.clear()
-    logger.info("All clients disconnected")
+    logger.info("All clients disconnected (status preserved for auto-login)")
 
 
 def get_active_phones() -> list[str]:
