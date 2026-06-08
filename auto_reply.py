@@ -266,12 +266,47 @@ async def _get_reply_content(state: int, my_nickname: str,
 
 async def _send_auto_reply(client, phone: str, account_id: int,
                            user_id: int, text: str):
-    """Send a message via Telethon. Event handler saves it & updates last_send_time."""
+    """Send a message via Telethon, save to DB, and update last_send_time."""
     try:
-        await client.send_message(user_id, text)
-        logger.info(f"[{phone}] Sent auto-reply to {user_id}: {text[:80]}...")
+        sent_msg = await client.send_message(user_id, text)
+        logger.info(f"[{phone}] [AutoReply] 发送成功: user_id={user_id}, text={text[:80]}...")
+
+        # Save sent message to tg_chat_message
+        try:
+            send_time = sent_msg.date if sent_msg.date else datetime.utcnow()
+            async with database.pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """INSERT INTO tg_chat_message
+                           (tg_account_id, chat_id, message_id, sender_user_id,
+                            is_outgoing, send_time, content_type, text_content, create_time)
+                           VALUES (%s, %s, %s, %s, 1, %s, 'text', %s, NOW())
+                           ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
+                        (account_id, user_id, sent_msg.id, None,
+                         send_time, text),
+                    )
+            logger.info(f"[{phone}] [AutoReply] 消息已录入数据库: msg_id={sent_msg.id}")
+        except Exception as e:
+            logger.error(f"[{phone}] [AutoReply] 录入消息到数据库失败: {e}")
+
+        # Update last_send_time
+        try:
+            send_time = sent_msg.date if sent_msg.date else datetime.utcnow()
+            async with database.pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """UPDATE tg_contact
+                           SET last_send_time = %s
+                           WHERE tg_account_id = %s AND user_id = %s
+                             AND (last_send_time IS NULL OR last_send_time < %s)""",
+                        (send_time, account_id, user_id, send_time),
+                    )
+            logger.info(f"[{phone}] [AutoReply] last_send_time 已更新")
+        except Exception as e:
+            logger.error(f"[{phone}] [AutoReply] 更新 last_send_time 失败: {e}")
+
     except Exception as e:
-        logger.error(f"[{phone}] Failed to send auto-reply to {user_id}: {e}")
+        logger.error(f"[{phone}] [AutoReply] 发送消息失败: user_id={user_id}, error={e}")
 
 
 # ---------------------------------------------------------------------------
