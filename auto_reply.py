@@ -6,6 +6,9 @@ Two triggers:
 """
 import asyncio
 import logging
+import re
+import tempfile
+import os
 from datetime import datetime, timedelta
 
 import httpx
@@ -253,6 +256,9 @@ async def _get_reply_content(state: int, my_nickname: str,
                 data = resp.json()
                 reply = data.get("reply")
                 logger.info(f"[AutoReply] 解析回复内容: {reply}")
+                if not reply or not reply.strip():
+                    logger.info("[AutoReply] 回复内容为空，不发送")
+                    return None
                 return reply
             logger.warning(f"[AutoReply] API返回非200: {resp.status_code}, body={resp.text[:500]}")
     except Exception as e:
@@ -264,49 +270,124 @@ async def _get_reply_content(state: int, my_nickname: str,
 # Send message helper
 # ---------------------------------------------------------------------------
 
+# Regex to match [AIMG:url] tags
+_AIMG_PATTERN = re.compile(r'\[AIMG:(.*?)\]')
+
+
+def _parse_reply_content(text: str):
+    """Parse reply text for [AIMG:url] tags.
+    Returns (image_urls: list[str], remaining_text: str).
+    """
+    image_urls = _AIMG_PATTERN.findall(text)
+    remaining = _AIMG_PATTERN.sub('', text).strip()
+    # Clean up extra blank lines left after removing AIMG tags
+    remaining = re.sub(r'\n\s*\n', '\n', remaining).strip()
+    return image_urls, remaining
+
+
+async def _download_image(url: str) -> str | None:
+    """Download image from URL to a temp file, return the file path."""
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http_client:
+            resp = await http_client.get(url)
+            if resp.status_code == 200:
+                # Determine extension from URL or content-type
+                ext = '.jpg'
+                ct = resp.headers.get('content-type', '')
+                if 'png' in ct:
+                    ext = '.png'
+                elif 'gif' in ct:
+                    ext = '.gif'
+                elif 'webp' in ct:
+                    ext = '.webp'
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                tmp.write(resp.content)
+                tmp.close()
+                return tmp.name
+            else:
+                logger.warning(f"[AutoReply] 下载图片失败: {url}, status={resp.status_code}")
+    except Exception as e:
+        logger.error(f"[AutoReply] 下载图片异常: {url}, error={e}")
+    return None
+
+
 async def _send_auto_reply(client, phone: str, account_id: int,
                            user_id: int, text: str):
-    """Send a message via Telethon, save to DB, and update last_send_time."""
+    """Send a message via Telethon, save to DB, and update last_send_time.
+    Supports [AIMG:url] tags: sends images first, then remaining text."""
     try:
-        sent_msg = await client.send_message(user_id, text)
-        logger.info(f"[{phone}] [AutoReply] 发送成功: user_id={user_id}, text={text[:80]}...")
+        image_urls, remaining_text = _parse_reply_content(text)
+        last_sent_msg = None
 
-        # Save sent message to tg_chat_message
-        try:
-            send_time = sent_msg.date if sent_msg.date else datetime.utcnow()
-            async with database.pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        """INSERT INTO tg_chat_message
-                           (tg_account_id, chat_id, message_id, sender_user_id,
-                            is_outgoing, send_time, content_type, text_content, create_time)
-                           VALUES (%s, %s, %s, %s, 1, %s, 'text', %s, NOW())
-                           ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
-                        (account_id, user_id, sent_msg.id, None,
-                         send_time, text),
-                    )
-            logger.info(f"[{phone}] [AutoReply] 消息已录入数据库: msg_id={sent_msg.id}")
-        except Exception as e:
-            logger.error(f"[{phone}] [AutoReply] 录入消息到数据库失败: {e}")
+        # Send images first
+        for img_url in image_urls:
+            try:
+                logger.info(f"[{phone}] [AutoReply] 下载图片: {img_url}")
+                img_path = await _download_image(img_url)
+                if img_path:
+                    sent_msg = await client.send_file(user_id, img_path)
+                    last_sent_msg = sent_msg
+                    logger.info(f"[{phone}] [AutoReply] 图片发送成功: user_id={user_id}, url={img_url}")
+                    # Save image message to DB
+                    await _save_sent_message(phone, account_id, user_id, sent_msg, 'photo', f'[AIMG:{img_url}]')
+                    # Clean up temp file
+                    try:
+                        os.unlink(img_path)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1)  # brief delay between images
+                else:
+                    logger.warning(f"[{phone}] [AutoReply] 图片下载失败，跳过: {img_url}")
+            except Exception as e:
+                logger.error(f"[{phone}] [AutoReply] 发送图片失败: url={img_url}, error={e}")
 
-        # Update last_send_time
-        try:
-            send_time = sent_msg.date if sent_msg.date else datetime.utcnow()
-            async with database.pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        """UPDATE tg_contact
-                           SET last_send_time = %s
-                           WHERE tg_account_id = %s AND user_id = %s
-                             AND (last_send_time IS NULL OR last_send_time < %s)""",
-                        (send_time, account_id, user_id, send_time),
-                    )
-            logger.info(f"[{phone}] [AutoReply] last_send_time 已更新")
-        except Exception as e:
-            logger.error(f"[{phone}] [AutoReply] 更新 last_send_time 失败: {e}")
+        # Send remaining text (only if non-empty)
+        if remaining_text:
+            sent_msg = await client.send_message(user_id, remaining_text)
+            last_sent_msg = sent_msg
+            logger.info(f"[{phone}] [AutoReply] 文字发送成功: user_id={user_id}, text={remaining_text[:80]}...")
+            await _save_sent_message(phone, account_id, user_id, sent_msg, 'text', remaining_text)
+
+        # Update last_send_time with the last sent message
+        if last_sent_msg:
+            try:
+                send_time = last_sent_msg.date if last_sent_msg.date else datetime.utcnow()
+                async with database.pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            """UPDATE tg_contact
+                               SET last_send_time = %s
+                               WHERE tg_account_id = %s AND user_id = %s
+                                 AND (last_send_time IS NULL OR last_send_time < %s)""",
+                            (send_time, account_id, user_id, send_time),
+                        )
+                logger.info(f"[{phone}] [AutoReply] last_send_time 已更新")
+            except Exception as e:
+                logger.error(f"[{phone}] [AutoReply] 更新 last_send_time 失败: {e}")
 
     except Exception as e:
         logger.error(f"[{phone}] [AutoReply] 发送消息失败: user_id={user_id}, error={e}")
+
+
+async def _save_sent_message(phone: str, account_id: int, user_id: int,
+                             sent_msg, content_type: str, content: str):
+    """Save a sent message to tg_chat_message table."""
+    try:
+        send_time = sent_msg.date if sent_msg.date else datetime.utcnow()
+        async with database.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """INSERT INTO tg_chat_message
+                       (tg_account_id, chat_id, message_id, sender_user_id,
+                        is_outgoing, send_time, content_type, text_content, create_time)
+                       VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
+                       ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
+                    (account_id, user_id, sent_msg.id, None,
+                     send_time, content_type, content),
+                )
+        logger.info(f"[{phone}] [AutoReply] 消息已录入数据库: msg_id={sent_msg.id}, type={content_type}")
+    except Exception as e:
+        logger.error(f"[{phone}] [AutoReply] 录入消息到数据库失败: {e}")
 
 
 # ---------------------------------------------------------------------------
