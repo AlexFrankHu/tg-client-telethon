@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS `tg_contact` (
     `last_online_time` DATETIME DEFAULT NULL COMMENT '最后在线时间',
     `last_send_time` DATETIME DEFAULT NULL COMMENT '最后发送时间',
     `last_receive_time` DATETIME DEFAULT NULL COMMENT '最后接收时间',
+    `auto_reply` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否开启自动回复 1开启 0关闭',
     `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
     `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY `uk_account_user` (`tg_account_id`, `user_id`),
