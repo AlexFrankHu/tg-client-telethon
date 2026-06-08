@@ -218,14 +218,22 @@ async def add_contact(req: AddContactRequest):
         from telethon.tl.types import InputPhoneContact
         import random
 
+        # Normalize contact phone: ensure + prefix
+        contact_phone = req.contact_phone.strip()
+        if not contact_phone.startswith("+"):
+            contact_phone = "+" + contact_phone
+
+        logger.info(f"[{req.phone}] Adding contact, original: {req.contact_phone}, normalized: {contact_phone}")
+
         # First check if already a contact by searching
         try:
-            entity = await client.get_entity(req.contact_phone)
+            entity = await client.get_entity(contact_phone)
             if entity:
                 # Check if already in contacts
                 result = await client(GetContactsRequest(hash=0))
+                contact_phone_clean = contact_phone.replace("+", "")
                 for user in result.users:
-                    if user.phone and user.phone.replace("+", "") == req.contact_phone.replace("+", ""):
+                    if user.phone and user.phone.replace("+", "") == contact_phone_clean:
                         return {"success": True, "skipped": True, "message": "已是好友", "user_id": user.id}
         except Exception:
             pass
@@ -233,8 +241,8 @@ async def add_contact(req: AddContactRequest):
         # Import contact
         contact = InputPhoneContact(
             client_id=random.randint(0, 2**31),
-            phone="+" + req.contact_phone.lstrip("+"),
-            first_name=req.contact_phone,
+            phone=contact_phone,
+            first_name=contact_phone,
             last_name=""
         )
         result = await client(ImportContactsRequest([contact]))
@@ -242,7 +250,7 @@ async def add_contact(req: AddContactRequest):
         if result.imported:
             user = result.users[0] if result.users else None
             user_id = user.id if user else None
-            logger.info(f"[{req.phone}] Added contact {req.contact_phone}, user_id={user_id}")
+            logger.info(f"[{req.phone}] Added contact {contact_phone}, user_id={user_id}")
             return {"success": True, "skipped": False, "message": "添加成功", "user_id": user_id}
         elif result.users:
             user_id = result.users[0].id
@@ -250,7 +258,7 @@ async def add_contact(req: AddContactRequest):
         else:
             return {"success": False, "error": "该号码未注册Telegram或无法添加"}
     except Exception as e:
-        logger.error(f"[{req.phone}] Add contact {req.contact_phone} error: {e}")
+        logger.error(f"[{req.phone}] Add contact {contact_phone} error: {e}")
         return {"success": False, "error": str(e)}
 
 
