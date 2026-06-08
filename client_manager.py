@@ -13,6 +13,7 @@ import config
 import database
 import notify
 import data_collector
+import auto_reply
 from phone_country import get_country_by_phone
 
 logger = logging.getLogger(__name__)
@@ -189,6 +190,9 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
                 if msg and not msg.out:
                     logger.info(f"[{phone}] New incoming message from chat {event.chat_id}")
                 asyncio.create_task(data_collector.save_realtime_message(phone, event, client))
+                # Trigger auto-reply for incoming private messages
+                if msg and not msg.out:
+                    asyncio.create_task(auto_reply.handle_incoming_message(phone, event, client))
             except Exception as e:
                 logger.error(f"[{phone}] Base handler error: {e}")
 

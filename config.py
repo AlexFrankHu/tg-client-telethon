@@ -20,6 +20,10 @@ BOT_CHAT_ID = os.getenv("BOT_CHAT_ID", "-5181774632")
 JWT_SECRET = os.getenv("JWT_SECRET", "tg-telethon-secret-key-2024")
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
 
+# Auto-reply
+REPLY_API_URL = os.getenv("REPLY_API_URL", "http://127.0.0.1:8000/generate-reply")
+AUTO_REPLY_INTERVAL = int(os.getenv("AUTO_REPLY_INTERVAL", "300"))  # seconds (default 5 min)
+
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ACCOUNT_DIR = os.path.join(BASE_DIR, "account")

@@ -15,6 +15,7 @@ import client_manager
 import notify
 import ws_handler
 import auth
+import auto_reply
 
 # Setup logging
 os.makedirs(config.LOGS_DIR, exist_ok=True)
@@ -49,13 +50,20 @@ async def lifespan(app: FastAPI):
 
     # Start periodic sync task (every hour)
     sync_task = asyncio.create_task(_periodic_sync())
+    # Start auto-reply polling task
+    auto_reply_task = asyncio.create_task(auto_reply.poll_auto_reply())
 
     yield
 
-    # Cancel sync task
+    # Cancel tasks
+    auto_reply_task.cancel()
     sync_task.cancel()
     try:
         await sync_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await auto_reply_task
     except asyncio.CancelledError:
         pass
 
