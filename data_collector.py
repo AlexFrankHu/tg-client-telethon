@@ -6,6 +6,9 @@ from telethon import functions
 from telethon.tl.types import (
     User, UserStatusOnline, UserStatusOffline, UserStatusRecently,
     MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage,
+    MessageMediaGeo, MessageMediaGeoLive, MessageMediaContact,
+    MessageMediaPoll, MessageMediaDice, MessageMediaInvoice,
+    MessageMediaGame, MessageMediaStory,
     Document, Photo, MessageService
 )
 import database
@@ -238,12 +241,16 @@ async def upsert_message(account_id: int, chat_id: int, msg):
                     media_file_id = doc.id
                     media_file_size = doc.size
                     media_mime_type = doc.mime_type
+                    is_animated = getattr(doc, 'mime_type', '') == 'application/x-tgsticker'
                     for attr in doc.attributes:
                         attr_type = type(attr).__name__
                         if attr_type == "DocumentAttributeFilename":
                             media_file_name = attr.file_name
                         elif attr_type == "DocumentAttributeVideo":
-                            content_type = "video"
+                            if getattr(attr, 'round_message', False):
+                                content_type = "video_note"
+                            else:
+                                content_type = "video"
                             media_duration = attr.duration
                             media_width = attr.w
                             media_height = attr.h
@@ -251,14 +258,37 @@ async def upsert_message(account_id: int, chat_id: int, msg):
                             if attr.voice:
                                 content_type = "voice"
                             else:
-                                content_type = "document"
+                                content_type = "audio"
                             media_duration = attr.duration
                         elif attr_type == "DocumentAttributeSticker":
                             content_type = "sticker"
+                        elif attr_type == "DocumentAttributeAnimated":
+                            content_type = "gif"
+                        elif attr_type == "DocumentAttributeCustomEmoji":
+                            content_type = "custom_emoji"
+                    # If mime_type indicates GIF animation
+                    if content_type == "text" and media_mime_type in ('image/gif', 'video/mp4') and 'animated' in str(doc.attributes).lower():
+                        content_type = "gif"
                     if content_type == "text":
                         content_type = "document"
             elif isinstance(msg.media, MessageMediaWebPage):
-                content_type = "text"  # Keep as text with URL
+                content_type = "text"
+            elif isinstance(msg.media, MessageMediaGeo):
+                content_type = "geo"
+            elif isinstance(msg.media, MessageMediaGeoLive):
+                content_type = "geo_live"
+            elif isinstance(msg.media, MessageMediaContact):
+                content_type = "contact"
+            elif isinstance(msg.media, MessageMediaPoll):
+                content_type = "poll"
+            elif isinstance(msg.media, MessageMediaDice):
+                content_type = "dice"
+            elif isinstance(msg.media, MessageMediaInvoice):
+                content_type = "invoice"
+            elif isinstance(msg.media, MessageMediaGame):
+                content_type = "game"
+            elif isinstance(msg.media, MessageMediaStory):
+                content_type = "story"
             else:
                 content_type = "other"
 

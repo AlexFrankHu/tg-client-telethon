@@ -394,6 +394,57 @@ async def _save_sent_message(phone: str, account_id: int, user_id: int,
 # Chat context builder
 # ---------------------------------------------------------------------------
 
+# Mapping from DB content_type to chat_context tag for media messages
+_MEDIA_TAG_MAP = {
+    'photo':    'IMG',
+    'video':    'VIDEO',
+    'video_note': 'VIDEONOTE',
+    'gif':      'GIF',
+    'animation': 'GIF',
+    'voice':    'VOICE',
+    'audio':    'AUDIO',
+    'document': 'FILE',
+    'sticker':  'STICKER',
+    'custom_emoji': 'CUSTOMEMOJI',
+    'geo':      'LOCATION',
+    'geo_live': 'LOCATIONLIVE',
+    'contact':  'CONTACT',
+    'poll':     'POLL',
+    'dice':     'DICE',
+    'invoice':  'INVOICE',
+    'game':     'GAME',
+    'story':    'STORY',
+}
+
+
+def _format_message_content(msg: dict) -> str:
+    """Format a single message's content for chat_context.
+    Text messages return raw text_content.
+    Media messages return [TAG:placeholder] or [IMG:url] for photos."""
+    content_type = (msg.get('content_type') or 'text').lower()
+    text_content = msg.get('text_content') or ''
+
+    if content_type == 'text':
+        return text_content
+
+    tag = _MEDIA_TAG_MAP.get(content_type)
+    if not tag:
+        # Unknown media type
+        return '[UNKNOWN:placeholder]'
+
+    if tag == 'IMG':
+        # For photos: try to extract URL from text_content if available
+        # Auto-reply sent images store content as [AIMG:url]
+        aimg_match = _AIMG_PATTERN.search(text_content)
+        if aimg_match:
+            return f'[IMG:{aimg_match.group(1)}]'
+        # No URL available, use placeholder
+        return '[IMG:placeholder]'
+
+    # All other media types use placeholder
+    return f'[{tag}:placeholder]'
+
+
 async def _build_chat_context(account_id: int, chat_id: int,
                               my_nickname: str, friend_nickname: str,
                               limit: int = 20) -> str:
@@ -409,7 +460,7 @@ async def _build_chat_context(account_id: int, chat_id: int,
         nickname = my_nickname if msg.get('is_outgoing') else friend_nickname
         t = msg.get('send_time')
         time_str = t.strftime('%Y-%m-%d %H:%M:%S') if t else ''
-        content = msg.get('text_content') or ''
+        content = _format_message_content(msg)
         if content:
             lines.append(f"{nickname}[{time_str}]:{content}")
     return '\n'.join(lines)
@@ -492,7 +543,7 @@ async def _get_chat_messages(account_id: int, chat_id: int, limit: int = 20) -> 
     async with database.pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute(
-                "SELECT is_outgoing, send_time, text_content "
+                "SELECT is_outgoing, send_time, text_content, content_type "
                 "FROM tg_chat_message "
                 "WHERE tg_account_id = %s AND chat_id = %s "
                 "ORDER BY send_time DESC, message_id DESC LIMIT %s",
