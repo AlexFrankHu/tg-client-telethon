@@ -16,6 +16,7 @@ import aiomysql
 from telethon.tl.types import User
 
 import config
+from config import to_beijing
 import database
 import client_manager
 
@@ -351,7 +352,7 @@ async def _send_auto_reply(client, phone: str, account_id: int,
         # Update last_send_time with the last sent message
         if last_sent_msg:
             try:
-                send_time = last_sent_msg.date if last_sent_msg.date else datetime.utcnow()
+                send_time = to_beijing(last_sent_msg.date) if last_sent_msg.date else datetime.now()
                 async with database.pool.acquire() as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(
@@ -373,7 +374,7 @@ async def _save_sent_message(phone: str, account_id: int, user_id: int,
                              sent_msg, content_type: str, content: str):
     """Save a sent message to tg_chat_message table."""
     try:
-        send_time = sent_msg.date if sent_msg.date else datetime.utcnow()
+        send_time = to_beijing(sent_msg.date) if sent_msg.date else datetime.now()
         async with database.pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(

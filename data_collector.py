@@ -2,6 +2,7 @@
 import logging
 import asyncio
 from datetime import datetime
+from config import to_beijing
 from telethon import functions
 from telethon.tl.types import (
     User, UserStatusOnline, UserStatusOffline, UserStatusRecently,
@@ -83,12 +84,13 @@ async def collect_chat_history(client, account_id: int, chat_id: int, limit: int
             count += 1
             # Track last send/receive times from history
             if msg.date:
+                msg_date_bj = to_beijing(msg.date)
                 if msg.out:
-                    if last_send_time is None or msg.date > last_send_time:
-                        last_send_time = msg.date
+                    if last_send_time is None or msg_date_bj > last_send_time:
+                        last_send_time = msg_date_bj
                 else:
-                    if last_receive_time is None or msg.date > last_receive_time:
-                        last_receive_time = msg.date
+                    if last_receive_time is None or msg_date_bj > last_receive_time:
+                        last_receive_time = msg_date_bj
         if count > 0:
             logger.debug(f"  Collected {count} messages for chat {chat_id}")
         # Update last_send_time / last_receive_time for the contact
@@ -125,7 +127,7 @@ async def upsert_contact(account_id: int, user: User):
         if isinstance(status, UserStatusOnline):
             last_online = datetime.now()
         elif isinstance(status, UserStatusOffline):
-            last_online = status.was_online
+            last_online = to_beijing(status.was_online)
 
         async with database.pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -191,10 +193,11 @@ async def save_realtime_message(phone: str, event, client=None):
             await upsert_message(account_id, chat_id, msg)
             # Update last_send_time or last_receive_time
             if msg.date:
+                msg_date_bj = to_beijing(msg.date)
                 if msg.out:
-                    await update_contact_last_times(account_id, chat_id, last_send=msg.date, last_receive=None)
+                    await update_contact_last_times(account_id, chat_id, last_send=msg_date_bj, last_receive=None)
                 else:
-                    await update_contact_last_times(account_id, chat_id, last_send=None, last_receive=msg.date)
+                    await update_contact_last_times(account_id, chat_id, last_send=None, last_receive=msg_date_bj)
 
         # If we have a client, try to add the sender as a contact record
         if client and msg and not msg.out:
@@ -216,7 +219,7 @@ async def upsert_message(account_id: int, chat_id: int, msg):
         sender_chat_id = msg.sender_id.channel_id if msg.sender_id and hasattr(msg.sender_id, "channel_id") else None
         sender_name = None
         is_outgoing = msg.out or False
-        send_time = msg.date
+        send_time = to_beijing(msg.date)
 
         # Determine content type and extract media info
         content_type = "text"

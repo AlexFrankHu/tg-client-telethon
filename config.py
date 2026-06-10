@@ -1,5 +1,22 @@
 """Application configuration."""
 import os
+from datetime import datetime, timezone, timedelta
+
+# Beijing timezone (UTC+8)
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def to_beijing(dt):
+    """Convert a datetime to Beijing time.
+    - If dt is timezone-aware (e.g. Telethon UTC), convert to Beijing time and strip tzinfo.
+    - If dt is naive, assume it's already Beijing time and return as-is.
+    - Returns None if dt is None.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    return dt
 
 # Server
 HOST = os.getenv("APP_HOST", "0.0.0.0")
