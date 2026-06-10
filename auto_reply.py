@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 import httpx
 import aiomysql
 from telethon.tl.types import User
+from telethon.errors import FloodWaitError
 
 import config
 from config import to_beijing
@@ -107,6 +108,9 @@ async def handle_incoming_message(phone: str, event, client):
             logger.info(f"[{phone}] [AutoReply] 自动回复成功: user_id={user_id}, state=0")
         else:
             logger.warning(f"[{phone}] [AutoReply] API未返回有效回复内容")
+    except FloodWaitError as e:
+        logger.warning(f"[{phone}] [AutoReply] FloodWait: 需要等待{e.seconds}s后再发消息")
+        await asyncio.sleep(e.seconds + 5)
     except Exception as e:
         logger.error(f"[{phone}] [AutoReply] 处理incoming消息异常: {e}")
 
@@ -167,7 +171,10 @@ async def _process_proactive_replies():
             if reply:
                 await _send_auto_reply(client, phone, account_id, user_id, reply)
                 logger.info(f"[{phone}] Proactive auto-reply to {user_id} (state={state})")
-                await asyncio.sleep(3)  # rate-limit between sends
+                await asyncio.sleep(5)  # rate-limit between sends
+        except FloodWaitError as e:
+            logger.warning(f"[{phone}] FloodWait: need to wait {e.seconds}s, pausing...")
+            await asyncio.sleep(min(e.seconds + 5, 300))  # wait as Telegram requires, cap at 5min
         except Exception as e:
             logger.error(f"Auto-reply poll error for user_id={row.get('user_id')}: {e}")
 
@@ -326,25 +333,35 @@ async def _send_auto_reply(client, phone: str, account_id: int,
                 logger.info(f"[{phone}] [AutoReply] 下载图片: {img_url}")
                 img_path = await _download_image(img_url)
                 if img_path:
-                    sent_msg = await client.send_file(user_id, img_path)
+                    try:
+                        sent_msg = await client.send_file(user_id, img_path)
+                    except FloodWaitError as e:
+                        logger.warning(f"[{phone}] [AutoReply] FloodWait发送图片: 等待{e.seconds}s")
+                        await asyncio.sleep(e.seconds + 5)
+                        sent_msg = await client.send_file(user_id, img_path)
                     last_sent_msg = sent_msg
                     logger.info(f"[{phone}] [AutoReply] 图片发送成功: user_id={user_id}, url={img_url}")
-                    # Save image message to DB
                     await _save_sent_message(phone, account_id, user_id, sent_msg, 'photo', f'[AIMG:{img_url}]')
-                    # Clean up temp file
                     try:
                         os.unlink(img_path)
                     except Exception:
                         pass
-                    await asyncio.sleep(1)  # brief delay between images
+                    await asyncio.sleep(2)  # brief delay between images
                 else:
                     logger.warning(f"[{phone}] [AutoReply] 图片下载失败，跳过: {img_url}")
+            except FloodWaitError:
+                raise  # re-raise to caller
             except Exception as e:
                 logger.error(f"[{phone}] [AutoReply] 发送图片失败: url={img_url}, error={e}")
 
         # Send remaining text (only if non-empty)
         if remaining_text:
-            sent_msg = await client.send_message(user_id, remaining_text)
+            try:
+                sent_msg = await client.send_message(user_id, remaining_text)
+            except FloodWaitError as e:
+                logger.warning(f"[{phone}] [AutoReply] FloodWait发送文字: 等待{e.seconds}s")
+                await asyncio.sleep(e.seconds + 5)
+                sent_msg = await client.send_message(user_id, remaining_text)
             last_sent_msg = sent_msg
             logger.info(f"[{phone}] [AutoReply] 文字发送成功: user_id={user_id}, text={remaining_text[:80]}...")
             await _save_sent_message(phone, account_id, user_id, sent_msg, 'text', remaining_text)
