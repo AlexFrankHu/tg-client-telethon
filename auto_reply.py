@@ -357,8 +357,6 @@ async def _send_auto_reply(client, phone: str, account_id: int,
                     await asyncio.sleep(2)  # brief delay between images
                 else:
                     logger.warning(f"[{phone}] [AutoReply] 图片下载失败，跳过: {img_url}")
-            except FloodWaitError:
-                raise  # re-raise to caller
             except Exception as e:
                 logger.error(f"[{phone}] [AutoReply] 发送图片失败: url={img_url}, error={e}")
                 await _write_send_fail_log(phone, account_id, my_nickname, user_id,
@@ -372,7 +370,10 @@ async def _send_auto_reply(client, phone: str, account_id: int,
             except FloodWaitError as e:
                 logger.warning(f"[{phone}] [AutoReply] FloodWait发送文字: 等待{e.seconds}s")
                 await asyncio.sleep(e.seconds + 5)
-                sent_msg = await client.send_message(user_id, remaining_text)
+                try:
+                    sent_msg = await client.send_message(user_id, remaining_text)
+                except Exception as e2:
+                    raise Exception(f"FloodWait重试后仍失败: {e2}") from e2
             last_sent_msg = sent_msg
             logger.info(f"[{phone}] [AutoReply] 文字发送成功: user_id={user_id}, text={remaining_text[:80]}...")
             await _save_sent_message(phone, account_id, user_id, sent_msg, 'text', remaining_text)
@@ -394,8 +395,6 @@ async def _send_auto_reply(client, phone: str, account_id: int,
             except Exception as e:
                 logger.error(f"[{phone}] [AutoReply] 更新 last_send_time 失败: {e}")
 
-    except FloodWaitError:
-        raise  # re-raise for caller to handle
     except Exception as e:
         logger.error(f"[{phone}] [AutoReply] 发送消息失败: user_id={user_id}, error={e}")
         await _write_send_fail_log(phone, account_id, my_nickname, user_id,
