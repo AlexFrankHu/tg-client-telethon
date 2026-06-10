@@ -104,7 +104,10 @@ async def handle_incoming_message(phone: str, event, client):
         )
         if reply:
             await asyncio.sleep(2)  # brief delay for naturalness
-            await _send_auto_reply(client, phone, account_id, user_id, reply)
+            friend_phone_num = contact.get('phone_number')
+            await _send_auto_reply(client, phone, account_id, user_id, reply,
+                                   my_nickname=my_nickname, friend_nickname=friend_nickname,
+                                   friend_phone=friend_phone_num)
             logger.info(f"[{phone}] [AutoReply] 自动回复成功: user_id={user_id}, state=0")
         else:
             logger.warning(f"[{phone}] [AutoReply] API未返回有效回复内容")
@@ -169,7 +172,10 @@ async def _process_proactive_replies():
                 chat_context=chat_context,
             )
             if reply:
-                await _send_auto_reply(client, phone, account_id, user_id, reply)
+                friend_phone_num = row.get('phone_number')
+                await _send_auto_reply(client, phone, account_id, user_id, reply,
+                                       my_nickname=my_nickname, friend_nickname=friend_nickname,
+                                       friend_phone=friend_phone_num)
                 logger.info(f"[{phone}] Proactive auto-reply to {user_id} (state={state})")
                 await asyncio.sleep(5)  # rate-limit between sends
         except FloodWaitError as e:
@@ -320,7 +326,9 @@ async def _download_image(url: str) -> str | None:
 
 
 async def _send_auto_reply(client, phone: str, account_id: int,
-                           user_id: int, text: str):
+                           user_id: int, text: str,
+                           my_nickname: str = None, friend_nickname: str = None,
+                           friend_phone: str = None):
     """Send a message via Telethon, save to DB, and update last_send_time.
     Supports [AIMG:url] tags: sends images first, then remaining text."""
     try:
@@ -353,6 +361,9 @@ async def _send_auto_reply(client, phone: str, account_id: int,
                 raise  # re-raise to caller
             except Exception as e:
                 logger.error(f"[{phone}] [AutoReply] 发送图片失败: url={img_url}, error={e}")
+                await _write_send_fail_log(phone, account_id, my_nickname, user_id,
+                                          friend_nickname, friend_phone, 'photo',
+                                          f'[AIMG:{img_url}]', str(e))
 
         # Send remaining text (only if non-empty)
         if remaining_text:
@@ -383,8 +394,13 @@ async def _send_auto_reply(client, phone: str, account_id: int,
             except Exception as e:
                 logger.error(f"[{phone}] [AutoReply] 更新 last_send_time 失败: {e}")
 
+    except FloodWaitError:
+        raise  # re-raise for caller to handle
     except Exception as e:
         logger.error(f"[{phone}] [AutoReply] 发送消息失败: user_id={user_id}, error={e}")
+        await _write_send_fail_log(phone, account_id, my_nickname, user_id,
+                                  friend_nickname, friend_phone, 'text',
+                                  text, str(e))
 
 
 async def _save_sent_message(phone: str, account_id: int, user_id: int,
@@ -406,6 +422,23 @@ async def _save_sent_message(phone: str, account_id: int, user_id: int,
         logger.info(f"[{phone}] [AutoReply] 消息已录入数据库: msg_id={sent_msg.id}, type={content_type}")
     except Exception as e:
         logger.error(f"[{phone}] [AutoReply] 录入消息到数据库失败: {e}")
+
+
+async def _write_send_fail_log(phone, account_id, my_nickname, user_id,
+                                friend_nickname, friend_phone, content_type,
+                                content, error_reason):
+    """Write a send failure log to the database."""
+    try:
+        await database.insert_send_fail_log(
+            phone=phone, tg_account_id=account_id, nickname=my_nickname,
+            user_id=user_id, friend_nickname=friend_nickname,
+            friend_phone=friend_phone, content_type=content_type,
+            content=content[:500] if content else None,
+            error_reason=error_reason[:500] if error_reason else None
+        )
+        logger.info(f"[{phone}] [AutoReply] 发送失败日志已写入: user_id={user_id}")
+    except Exception as e:
+        logger.error(f"[{phone}] [AutoReply] 写入发送失败日志失败: {e}")
 
 
 # ---------------------------------------------------------------------------

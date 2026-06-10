@@ -286,6 +286,25 @@ async def insert_login_log(phone: str, result: str, reason: str = None,
             await cur.execute(sql, (phone, result, reason, tg_user_id, nickname, proxy_info, datetime.now()))
 
 
+async def insert_send_fail_log(phone: str, tg_account_id: int = None,
+                              nickname: str = None, user_id: int = None,
+                              friend_nickname: str = None, friend_phone: str = None,
+                              content_type: str = 'text', content: str = None,
+                              error_reason: str = None):
+    """Insert a send failure log record."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            sql = """
+                INSERT INTO tg_send_fail_log
+                (phone, tg_account_id, nickname, user_id, friend_nickname,
+                 friend_phone, content_type, content, error_reason, send_time)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            await cur.execute(sql, (phone, tg_account_id, nickname, user_id,
+                                    friend_nickname, friend_phone, content_type,
+                                    content, error_reason, datetime.now()))
+
+
 async def update_import_account_status(phone: str, status: str, reason: str = None,
                                         tg_user_id: int = None, nickname: str = None,
                                         username: str = None):
