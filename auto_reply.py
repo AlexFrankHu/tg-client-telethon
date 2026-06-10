@@ -75,6 +75,9 @@ async def handle_incoming_message(phone: str, event, client):
         if not account.get('auto_reply', 1):
             logger.info(f"[{phone}] [AutoReply] 跳过: 账号未开启自动回复")
             return
+        if account.get('is_restricted', 0):
+            logger.info(f"[{phone}] [AutoReply] 跳过: 账号被限制")
+            return
         account_id = account['id']
 
         # Contact info — wait briefly for save_realtime_message to upsert contact
@@ -426,7 +429,8 @@ async def _save_sent_message(phone: str, account_id: int, user_id: int,
 async def _write_send_fail_log(phone, account_id, my_nickname, user_id,
                                 friend_nickname, friend_phone, content_type,
                                 content, error_reason):
-    """Write a send failure log to the database."""
+    """Write a send failure log to the database.
+    If the account has 10+ FloodWait failures, mark it as restricted."""
     try:
         await database.insert_send_fail_log(
             phone=phone, tg_account_id=account_id, nickname=my_nickname,
@@ -436,8 +440,33 @@ async def _write_send_fail_log(phone, account_id, my_nickname, user_id,
             error_reason=error_reason[:500] if error_reason else None
         )
         logger.info(f"[{phone}] [AutoReply] 发送失败日志已写入: user_id={user_id}")
+        # Check if account should be marked as restricted
+        if error_reason and 'Too many requests' in error_reason:
+            await _check_and_restrict_account(phone, account_id)
     except Exception as e:
         logger.error(f"[{phone}] [AutoReply] 写入发送失败日志失败: {e}")
+
+
+async def _check_and_restrict_account(phone, account_id):
+    """If the account has 10+ FloodWait send failures, mark it as restricted."""
+    try:
+        async with database.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT COUNT(*) AS cnt FROM tg_send_fail_log
+                       WHERE phone = %s AND error_reason LIKE '%%Too many requests%%'""",
+                    (phone,)
+                )
+                row = await cur.fetchone()
+                fail_count = row[0] if row else 0
+                if fail_count >= 10:
+                    await cur.execute(
+                        "UPDATE tg_telethon_account SET is_restricted = 1, update_time = NOW() WHERE id = %s",
+                        (account_id,)
+                    )
+                    logger.warning(f"[{phone}] 账号已被标记为限制 (FloodWait失败{fail_count}次)")
+    except Exception as e:
+        logger.error(f"[{phone}] 检查账号限制状态失败: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +576,7 @@ async def _get_eligible_contacts() -> list:
           AND a.auto_reply = 1
           AND a.status = 'online'
           AND (a.is_deleted = 0 OR a.is_deleted IS NULL)
+          AND (a.is_restricted = 0 OR a.is_restricted IS NULL)
           AND (
               c.last_send_time IS NULL
               OR c.last_receive_time IS NULL
