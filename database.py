@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS `{LOGIN_LOG_TABLE}` (
     `reason` VARCHAR(512) DEFAULT NULL COMMENT '失败原因',
     `tg_user_id` BIGINT DEFAULT NULL COMMENT 'Telegram用户ID',
     `nickname` VARCHAR(128) DEFAULT NULL COMMENT '昵称',
+    `proxy_info` VARCHAR(500) DEFAULT NULL COMMENT '代理信息',
     `login_time` DATETIME NOT NULL COMMENT '登录时间',
     `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     INDEX `idx_phone` (`phone`),
@@ -264,7 +265,8 @@ async def get_message_by_file_id(tg_account_id: int, file_id):
 
 
 async def insert_login_log(phone: str, result: str, reason: str = None,
-                           tg_user_id: int = None, nickname: str = None):
+                           tg_user_id: int = None, nickname: str = None,
+                           proxy_info: str = None):
     """Insert a login log record.
 
     Args:
@@ -273,14 +275,15 @@ async def insert_login_log(phone: str, result: str, reason: str = None,
         reason: Failure reason (optional).
         tg_user_id: Telegram user ID (on success).
         nickname: User nickname (on success).
+        proxy_info: Proxy address used for login (optional).
     """
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             sql = f"""
-                INSERT INTO `{LOGIN_LOG_TABLE}` (phone, result, reason, tg_user_id, nickname, login_time)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO `{LOGIN_LOG_TABLE}` (phone, result, reason, tg_user_id, nickname, proxy_info, login_time)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """
-            await cur.execute(sql, (phone, result, reason, tg_user_id, nickname, datetime.now()))
+            await cur.execute(sql, (phone, result, reason, tg_user_id, nickname, proxy_info, datetime.now()))
 
 
 async def update_import_account_status(phone: str, status: str, reason: str = None,

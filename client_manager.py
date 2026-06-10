@@ -107,7 +107,7 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
     if not _has_account_files(phone):
         msg = f"Account {phone}: missing .json or .session file in account/"
         logger.error(msg)
-        await database.insert_login_log(phone=phone, result="failed", reason="缺少 .json 或 .session 文件")
+        await database.insert_login_log(phone=phone, result="failed", reason="缺少 .json 或 .session 文件", proxy_info=None)
         await database.update_account_status(phone, "failed")
         await database.update_import_account_status(phone, "failed", reason="缺少 .json 或 .session 文件")
         return {"phone": phone, "success": False, "error": msg}
@@ -117,7 +117,7 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
     if not data:
         msg = f"Account {phone}: cannot read JSON file"
         logger.error(msg)
-        await database.insert_login_log(phone=phone, result="failed", reason="无法读取 JSON 文件")
+        await database.insert_login_log(phone=phone, result="failed", reason="无法读取 JSON 文件", proxy_info=None)
         await database.update_account_status(phone, "failed")
         await database.update_import_account_status(phone, "failed", reason="无法读取 JSON 文件")
         return {"phone": phone, "success": False, "error": msg}
@@ -128,7 +128,7 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
     if not api_id or not api_hash:
         msg = f"Account {phone}: missing api_id or api_hash"
         logger.error(msg)
-        await database.insert_login_log(phone=phone, result="failed", reason="缺少 api_id 或 api_hash")
+        await database.insert_login_log(phone=phone, result="failed", reason="缺少 api_id 或 api_hash", proxy_info=None)
         await database.update_account_status(phone, "failed")
         await database.update_import_account_status(phone, "failed", reason="缺少 api_id 或 api_hash")
         await notify.send_notification("登录失败", f"账号 +{phone}\n原因: 缺少 api_id 或 api_hash")
@@ -146,7 +146,7 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
     if not no_proxy and not proxy_kwargs:
         msg = f"Account {phone}: 未配置代理IP，禁止登录"
         logger.warning(msg)
-        await database.insert_login_log(phone=phone, result="failed", reason="未配置代理IP，禁止登录")
+        await database.insert_login_log(phone=phone, result="failed", reason="未配置代理IP，禁止登录", proxy_info=None)
         await database.update_account_status(phone, "failed")
         await database.update_import_account_status(phone, "failed", reason="未配置代理IP，禁止登录")
         return {"phone": phone, "success": False, "error": msg}
@@ -164,7 +164,7 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
             msg = f"Account {phone}: session not authorized, cannot auto-login"
             logger.warning(msg)
             await client.disconnect()
-            await database.insert_login_log(phone=phone, result="failed", reason="session 未授权，需要重新验证")
+            await database.insert_login_log(phone=phone, result="failed", reason="session 未授权，需要重新验证", proxy_info=proxy_url)
             await database.update_account_status(phone, "failed")
             await database.update_import_account_status(phone, "failed", reason="session 未授权，需要重新验证")
             await notify.send_notification("登录失败", f"账号 +{phone}\n原因: session 未授权，需要重新验证")
@@ -220,7 +220,7 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
         )
 
         logger.info(f"Account +{phone} logged in successfully (user_id={me.id}, nickname={nickname})")
-        await database.insert_login_log(phone=phone, result="success", tg_user_id=me.id, nickname=nickname)
+        await database.insert_login_log(phone=phone, result="success", tg_user_id=me.id, nickname=nickname, proxy_info=proxy_url)
         await database.update_import_account_status(phone, "online", tg_user_id=me.id, nickname=nickname, username=username)
         await notify.send_notification(
             "登录成功",
@@ -241,7 +241,7 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
     except (AuthKeyUnregisteredError, UserDeactivatedBanError) as e:
         error_msg = str(e)
         logger.error(f"Account +{phone} banned/deactivated: {error_msg}")
-        await database.insert_login_log(phone=phone, result="banned", reason=error_msg)
+        await database.insert_login_log(phone=phone, result="banned", reason=error_msg, proxy_info=proxy_url)
         await database.update_account_status(phone, "banned")
         await database.update_import_account_status(phone, "banned", reason=error_msg)
         await notify.send_notification("账号已被注销", f"账号: +{phone}\n原因: {error_msg}")
@@ -254,14 +254,14 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
                                         or "timed out" in error_msg.lower())
         if is_proxy_error:
             logger.error(f"Account +{phone} proxy connection failed: {error_msg}")
-            await database.insert_login_log(phone=phone, result="failed", reason=f"代理连接失败: {error_msg}")
+            await database.insert_login_log(phone=phone, result="failed", reason=f"代理连接失败: {error_msg}", proxy_info=proxy_url)
             await database.update_account_status(phone, "failed")
             await database.update_import_account_status(phone, "failed", reason=f"代理连接失败: {error_msg}")
             await notify.send_notification("代理连接失败", f"账号: +{phone}\n代理: {proxy_url}\n原因: {error_msg}")
             return {"phone": phone, "success": False, "error": f"代理连接失败: {error_msg}"}
         else:
             logger.error(f"Account +{phone} login failed: {error_msg}")
-            await database.insert_login_log(phone=phone, result="failed", reason=error_msg)
+            await database.insert_login_log(phone=phone, result="failed", reason=error_msg, proxy_info=proxy_url)
             await database.update_account_status(phone, "failed")
             await database.update_import_account_status(phone, "failed", reason=error_msg)
             await notify.send_notification("登录失败", f"账号: +{phone}\n原因: {error_msg}")
@@ -272,13 +272,13 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
         is_proxy_error = proxy_url and ("proxy" in error_msg.lower() or "socks" in error_msg.lower())
         if is_proxy_error:
             logger.error(f"Account +{phone} proxy error: {error_msg}")
-            await database.insert_login_log(phone=phone, result="failed", reason=f"代理错误: {error_msg}")
+            await database.insert_login_log(phone=phone, result="failed", reason=f"代理错误: {error_msg}", proxy_info=proxy_url)
             await database.update_account_status(phone, "failed")
             await database.update_import_account_status(phone, "failed", reason=f"代理错误: {error_msg}")
             await notify.send_notification("代理连接失败", f"账号: +{phone}\n代理: {proxy_url}\n原因: {error_msg}")
         else:
             logger.error(f"Account +{phone} login failed: {error_msg}")
-            await database.insert_login_log(phone=phone, result="failed", reason=error_msg)
+            await database.insert_login_log(phone=phone, result="failed", reason=error_msg, proxy_info=proxy_url)
             await database.update_account_status(phone, "failed")
             await database.update_import_account_status(phone, "failed", reason=error_msg)
             await notify.send_notification("登录失败", f"账号: +{phone}\n原因: {error_msg}")
