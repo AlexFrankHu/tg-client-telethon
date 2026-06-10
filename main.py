@@ -38,6 +38,9 @@ async def lifespan(app: FastAPI):
     logger.info("Starting tg-client-telethon...")
     await database.init_db()
 
+    # Logout all previously online accounts (write logout logs for restart)
+    await _logout_all_on_startup()
+
     # Auto-login accounts that were previously online
     results = await client_manager.login_all_db_accounts()
     online_count = sum(1 for r in results if r.get("success"))
@@ -73,6 +76,31 @@ async def lifespan(app: FastAPI):
     await client_manager.disconnect_all()
     await database.close_db()
     logger.info("Shutdown complete")
+
+
+async def _logout_all_on_startup():
+    """On restart, write logout logs for all accounts that were previously online,
+    then set their status back to 'online' so login_all_db_accounts picks them up."""
+    try:
+        accounts = await database.get_all_accounts()
+        online_accounts = [a for a in accounts if a.get('status') == 'online']
+        if not online_accounts:
+            logger.info("Startup logout: no online accounts to log out")
+            return
+        logger.info(f"Startup logout: writing logout logs for {len(online_accounts)} accounts")
+        for acc in online_accounts:
+            phone = acc['phone']
+            await database.insert_login_log(
+                phone=phone, result='logout',
+                reason='服务重启',
+                tg_user_id=acc.get('tg_user_id'),
+                nickname=acc.get('nickname'),
+                proxy_info=acc.get('proxy_url')
+            )
+            logger.info(f"Startup logout log written for +{phone}")
+        # Keep status='online' so login_all_db_accounts will re-login them
+    except Exception as e:
+        logger.error(f"Startup logout error: {e}")
 
 
 app = FastAPI(title="tg-client-telethon", lifespan=lifespan)

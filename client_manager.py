@@ -351,7 +351,13 @@ async def login_all_waiting_accounts() -> list[dict]:
 
 
 async def logout_account(phone: str) -> dict:
-    """Disconnect and mark account as offline."""
+    """Disconnect and mark account as offline, write logout log."""
+    # Get account info for log before disconnecting
+    account = await database.get_account_by_phone(phone)
+    tg_user_id = account.get('tg_user_id') if account else None
+    nickname = account.get('nickname') if account else None
+    proxy_url = account.get('proxy_url') if account else None
+
     client = active_clients.pop(phone, None)
     if client:
         try:
@@ -360,6 +366,12 @@ async def logout_account(phone: str) -> dict:
             pass
 
     await database.update_account_status(phone, "offline")
+    # Write logout log
+    await database.insert_login_log(
+        phone=phone, result='logout',
+        tg_user_id=tg_user_id, nickname=nickname,
+        proxy_info=proxy_url
+    )
     logger.info(f"Account +{phone} logged out")
     return {"phone": phone, "status": "offline"}
 
