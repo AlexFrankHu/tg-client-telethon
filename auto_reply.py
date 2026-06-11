@@ -89,6 +89,9 @@ async def handle_incoming_message(phone: str, event, client):
         if not contact.get('auto_reply', 1):
             logger.info(f"[{phone}] [AutoReply] 跳过: 好友 {user_id} 未开启自动回复")
             return
+        if contact.get('source') != 'import':
+            logger.info(f"[{phone}] [AutoReply] 跳过: 好友 {user_id} 非后台导入好友")
+            return
 
         # Build context & call API
         my_nickname = account.get('nickname') or phone
@@ -572,6 +575,7 @@ async def _get_eligible_contacts() -> list:
         JOIN tg_telethon_account a ON c.tg_account_id = a.id
         WHERE c.auto_reply = 1
           AND c.is_bot = 0
+          AND c.source = 'import'
           AND c.user_id NOT IN ({placeholders})
           AND a.auto_reply = 1
           AND a.status = 'online'

@@ -48,22 +48,34 @@ async def sync_contacts_and_history(client, phone: str):
     except Exception as e:
         logger.error(f"[{phone}] Failed to get contacts: {e}")
 
-    # 2. Collect ALL chats (not just friends) and history
+    # 2. Get imported contact user_ids for this account
+    imported_user_ids = set()
     try:
-        dialogs = await client.get_dialogs(limit=None)  # Get ALL dialogs
+        async with database.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT user_id FROM tg_contact WHERE tg_account_id = %s AND source = 'import'",
+                    (account_id,),
+                )
+                rows = await cur.fetchall()
+                imported_user_ids = {r[0] for r in rows}
+        logger.info(f"[{phone}] Found {len(imported_user_ids)} imported contacts")
+    except Exception as e:
+        logger.error(f"[{phone}] Failed to query imported contacts: {e}")
+
+    # 3. Collect chats and history (only for imported contacts)
+    try:
+        dialogs = await client.get_dialogs(limit=None)
         logger.info(f"[{phone}] Got {len(dialogs)} dialogs (all chats)")
         for dialog in dialogs:
             if dialog.is_user:
-                # Save the user as contact record
                 entity = dialog.entity
                 if isinstance(entity, User):
                     await upsert_contact(account_id, entity)
-                # Get chat history
-                await collect_chat_history(client, account_id, dialog.entity.id)
-            elif dialog.is_group or dialog.is_channel:
-                # Get group/channel history too
-                await collect_chat_history(client, account_id, dialog.entity.id)
-            await asyncio.sleep(0.5)  # Rate limit
+                # Only collect history for imported contacts
+                if dialog.entity.id in imported_user_ids:
+                    await collect_chat_history(client, account_id, dialog.entity.id)
+            await asyncio.sleep(0.5)
     except Exception as e:
         logger.error(f"[{phone}] Failed to collect dialogs: {e}")
 

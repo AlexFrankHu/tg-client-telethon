@@ -249,10 +249,15 @@ async def _ensure_contact_record(account_id: int, user_id: int, phone: str):
                 if not existing:
                     await cur.execute(
                         """INSERT INTO tg_contact (tg_account_id, user_id, first_name, nickname,
-                           phone_number, is_mutual, is_bot, user_type, auto_reply, create_time)
-                           VALUES (%s, %s, %s, %s, %s, 0, 0, 'regular', 1, NOW())""",
+                           phone_number, is_mutual, is_bot, user_type, auto_reply, source, create_time)
+                           VALUES (%s, %s, %s, %s, %s, 0, 0, 'regular', 1, 'import', NOW())""",
                         (account_id, user_id, phone, phone, phone),
                     )
                     logger.info(f"[ContactAdder] tg_contact 已创建: account_id={account_id}, user_id={user_id}")
+                else:
+                    await cur.execute(
+                        "UPDATE tg_contact SET source = 'import' WHERE id = %s AND source != 'import'",
+                        (existing['id'],),
+                    )
     except Exception as e:
         logger.error(f"[ContactAdder] 写入tg_contact失败: {e}")
