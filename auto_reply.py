@@ -133,11 +133,15 @@ async def poll_auto_reply():
     while True:
         try:
             await asyncio.sleep(POLL_INTERVAL)
+        except asyncio.CancelledError:
+            break
+        try:
             logger.info("Auto-reply poll: starting...")
             await _process_proactive_replies()
             logger.info("Auto-reply poll: done")
         except asyncio.CancelledError:
-            break
+            logger.warning("Auto-reply poll: CancelledError during processing, will retry next cycle")
+            continue
         except Exception as e:
             logger.error(f"Auto-reply poll error: {e}")
 
