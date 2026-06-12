@@ -41,10 +41,9 @@ def _get_session_path(phone: str) -> str:
 
 
 def _has_account_files(phone: str) -> bool:
-    """Check if account .json and .session files exist."""
-    json_path = os.path.join(config.ACCOUNT_DIR, phone + ".json")
+    """Check if account .session file exists (.json is optional)."""
     session_path = os.path.join(config.ACCOUNT_DIR, phone + ".session")
-    return os.path.exists(json_path) and os.path.exists(session_path)
+    return os.path.exists(session_path)
 
 
 def _build_device_kwargs(data: dict) -> dict:
@@ -105,37 +104,33 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
 
     # Check files exist
     if not _has_account_files(phone):
-        msg = f"Account {phone}: missing .json or .session file in account/"
+        msg = f"Account {phone}: missing .session file in account/"
         logger.error(msg)
-        await database.insert_login_log(phone=phone, result="failed", reason="缺少 .json 或 .session 文件", proxy_info=None)
+        await database.insert_login_log(phone=phone, result="failed", reason="缺少 .session 文件", proxy_info=None)
         await database.update_account_status(phone, "failed")
-        await database.update_import_account_status(phone, "failed", reason="缺少 .json 或 .session 文件")
+        await database.update_import_account_status(phone, "failed", reason="缺少 .session 文件")
         return {"phone": phone, "success": False, "error": msg}
 
-    # Read JSON
+    # Read JSON (optional - may not exist for session-only imports)
     data = _read_account_json(phone)
-    if not data:
-        msg = f"Account {phone}: cannot read JSON file"
-        logger.error(msg)
-        await database.insert_login_log(phone=phone, result="failed", reason="无法读取 JSON 文件", proxy_info=None)
-        await database.update_account_status(phone, "failed")
-        await database.update_import_account_status(phone, "failed", reason="无法读取 JSON 文件")
-        return {"phone": phone, "success": False, "error": msg}
+    if data:
+        api_id = data.get("app_id") or data.get("api_id")
+        api_hash = data.get("app_hash") or data.get("api_hash")
+        device_kwargs = _build_device_kwargs(data)
+    else:
+        api_id = None
+        api_hash = None
+        device_kwargs = {}
 
-    api_id = data.get("app_id") or data.get("api_id")
-    api_hash = data.get("app_hash") or data.get("api_hash")
-
+    # Use default api_id/api_hash if not available from JSON
     if not api_id or not api_hash:
-        msg = f"Account {phone}: missing api_id or api_hash"
-        logger.error(msg)
-        await database.insert_login_log(phone=phone, result="failed", reason="缺少 api_id 或 api_hash", proxy_info=None)
-        await database.update_account_status(phone, "failed")
-        await database.update_import_account_status(phone, "failed", reason="缺少 api_id 或 api_hash")
-        await notify.send_notification("登录失败", f"账号 +{phone}\n原因: 缺少 api_id 或 api_hash")
-        return {"phone": phone, "success": False, "error": msg}
+        # Default Telegram Desktop api_id/api_hash
+        api_id = 2040
+        api_hash = "b18441a1ff607e10a989891a5462e627"
+        logger.info(f"Account {phone}: no .json file or missing api_id/api_hash, using default")
 
     session_path = _get_session_path(phone)
-    device_kwargs = _build_device_kwargs(data)
+    # device_kwargs already set above
 
     # Get proxy info from database
     account_row = await database.get_account_by_phone(phone)
@@ -217,11 +212,11 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
             username=username,
             status="online",
             country=country,
-            device_model=data.get("device_model") or data.get("device"),
-            system_version=data.get("system_version"),
-            app_version=data.get("app_version"),
-            lang_code=data.get("lang_pack"),
-            system_lang_code=data.get("system_lang_pack"),
+            device_model=(data.get("device_model") or data.get("device")) if data else None,
+            system_version=data.get("system_version") if data else None,
+            app_version=data.get("app_version") if data else None,
+            lang_code=data.get("lang_pack") if data else None,
+            system_lang_code=data.get("system_lang_pack") if data else None,
         )
 
         logger.info(f"Account +{phone} logged in successfully (user_id={me.id}, nickname={nickname})")
