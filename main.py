@@ -460,6 +460,27 @@ async def test_proxy(req: ProxyTestRequest):
     return result
 
 
+class BatchImportRequest(BaseModel):
+    accountId: int
+    accountPhone: str
+    importType: str = "phone"
+    contactBatchNo: str = ""
+    contacts: list = []
+
+
+@app.post("/api/contacts/batch_import")
+async def batch_import_contacts_api(req: BatchImportRequest):
+    """Batch import contacts for an account using ImportContactsRequest."""
+    result = await contact_adder.batch_import_contacts(
+        account_id=req.accountId,
+        account_phone=req.accountPhone,
+        import_type=req.importType,
+        contact_batch_no=req.contactBatchNo,
+        contacts=[c if isinstance(c, dict) else c.dict() for c in req.contacts],
+    )
+    return result
+
+
 @app.post("/api/notify/test")
 async def test_notify(title: str = "测试通知", content: str = "这是一条测试消息"):
     """Test notification."""

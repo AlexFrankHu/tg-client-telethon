@@ -364,6 +364,178 @@ async def _ensure_contact_record(account_id: int, user_id: int, phone: str):
         logger.error(f"[ContactAdder] 写入tg_contact失败: {e}")
 
 
+async def batch_import_contacts(account_id: int, account_phone: str, import_type: str,
+                                contact_batch_no: str, contacts: list) -> dict:
+    """Batch import contacts using ImportContactsRequest for phone or get_entity+AddContactRequest for username.
+    Returns dict with imported/failed/retry counts.
+    """
+    from telethon.tl.functions.contacts import AddContactRequest
+    from telethon.tl.types import InputUser
+
+    if account_phone not in client_manager.active_clients:
+        return {"imported": 0, "failed": len(contacts), "error": "账号不在线"}
+
+    client = client_manager.active_clients[account_phone]
+    if not client.is_connected():
+        try:
+            await asyncio.wait_for(client.connect(), timeout=15)
+        except Exception as e:
+            return {"imported": 0, "failed": len(contacts), "error": f"重连失败: {e}"}
+
+    imported_count = 0
+    failed_count = 0
+    retry_count = 0
+
+    # Find assign log IDs for these contacts to update status
+    async def _find_log_id(contact_value, is_username):
+        try:
+            async with database.pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    if is_username:
+                        await cur.execute(
+                            "SELECT id FROM tg_contact_assign_log WHERE account_id = %s AND contact_username = %s AND status = 'pending' ORDER BY id DESC LIMIT 1",
+                            (account_id, contact_value),
+                        )
+                    else:
+                        await cur.execute(
+                            "SELECT id FROM tg_contact_assign_log WHERE account_id = %s AND contact_phone = %s AND status = 'pending' ORDER BY id DESC LIMIT 1",
+                            (account_id, contact_value),
+                        )
+                    row = await cur.fetchone()
+                    return row['id'] if row else None
+        except Exception:
+            return None
+
+    if import_type == "username":
+        # Username-based: add one by one using get_entity + AddContactRequest
+        for c in contacts:
+            username = c.get("username", "").strip()
+            if username.startswith("@"):
+                username = username[1:]
+            if not username:
+                failed_count += 1
+                continue
+
+            log_id = await _find_log_id(username, True)
+
+            try:
+                entity = await client.get_entity(username)
+                if entity:
+                    input_user = InputUser(user_id=entity.id, access_hash=entity.access_hash)
+                    await client(AddContactRequest(
+                        id=input_user,
+                        first_name=entity.first_name or username,
+                        last_name=entity.last_name or "",
+                        phone="",
+                        add_phone_privacy_exception=True
+                    ))
+                    imported_count += 1
+                    logger.info(f"[BatchImport] {account_phone}: 添加用户名 {username} 成功, user_id={entity.id}")
+                    if log_id:
+                        await _update_log(log_id, 'success', '联系人导入-添加成功', 1)
+                    await _ensure_contact_record(account_id, entity.id, username)
+                else:
+                    failed_count += 1
+                    if log_id:
+                        await _update_log(log_id, 'failed', '找不到该用户名', 1)
+            except Exception as e:
+                failed_count += 1
+                err_msg = str(e)
+                logger.warning(f"[BatchImport] {account_phone}: 添加用户名 {username} 失败: {err_msg}")
+                if log_id:
+                    await _update_log(log_id, 'failed', f'联系人导入失败: {err_msg[:200]}', 1)
+            await asyncio.sleep(1)
+    else:
+        # Phone-based: batch import using ImportContactsRequest
+        input_contacts = []
+        phone_list = []
+        for i, c in enumerate(contacts):
+            phone = c.get("phone", "").strip()
+            if not phone:
+                failed_count += 1
+                continue
+            normalized = phone if phone.startswith("+") else "+" + phone
+            input_contacts.append(InputPhoneContact(
+                client_id=i,
+                phone=normalized,
+                first_name=normalized,
+                last_name=""
+            ))
+            phone_list.append(phone)
+
+        if not input_contacts:
+            return {"imported": 0, "failed": failed_count, "retry": 0}
+
+        try:
+            result = await client(ImportContactsRequest(input_contacts))
+            logger.info(f"[BatchImport] {account_phone}: ImportContacts批量结果: imported={len(result.imported)}, users={len(result.users)}, retry_contacts={len(result.retry_contacts)}")
+
+            # Build mapping: client_id -> imported status
+            imported_client_ids = set()
+            for imp in result.imported:
+                imported_client_ids.add(imp.client_id)
+
+            # Build mapping: phone -> user
+            phone_to_user = {}
+            for user in result.users:
+                if user.phone:
+                    phone_clean = user.phone.replace("+", "")
+                    phone_to_user[phone_clean] = user
+
+            # Build retry set from client_ids
+            retry_client_ids = set(result.retry_contacts)
+
+            for i, phone in enumerate(phone_list):
+                phone_clean = phone.replace("+", "")
+                log_id = await _find_log_id(phone, False)
+
+                if i in imported_client_ids:
+                    # Successfully imported
+                    user = phone_to_user.get(phone_clean)
+                    user_id = user.id if user else None
+                    imported_count += 1
+                    logger.info(f"[BatchImport] {account_phone}: {phone} 导入成功, user_id={user_id}")
+                    if log_id:
+                        await _update_log(log_id, 'success', '联系人导入-添加成功', 1)
+                    if user_id:
+                        await _ensure_contact_record(account_id, user_id, phone)
+                elif phone_clean in phone_to_user:
+                    # User exists (already a friend)
+                    user = phone_to_user[phone_clean]
+                    imported_count += 1
+                    logger.info(f"[BatchImport] {account_phone}: {phone} 已是好友, user_id={user.id}")
+                    if log_id:
+                        await _update_log(log_id, 'skipped', '联系人导入-已是好友', 1)
+                    await _ensure_contact_record(account_id, user.id, phone)
+                elif i in retry_client_ids:
+                    # Telegram wants retry later
+                    retry_count += 1
+                    logger.warning(f"[BatchImport] {account_phone}: {phone} 需要稍后重试(retry_contacts)")
+                    if log_id:
+                        await _update_log(log_id, 'pending', '联系人导入-Telegram要求稍后重试', 1)
+                else:
+                    # Not found / not registered
+                    failed_count += 1
+                    logger.warning(f"[BatchImport] {account_phone}: {phone} 未注册Telegram或无法添加")
+                    if log_id:
+                        await _update_log(log_id, 'failed', '联系人导入-该号码未注册Telegram或无法添加', 1)
+        except Exception as e:
+            err_msg = str(e)
+            logger.error(f"[BatchImport] {account_phone}: ImportContacts批量异常: {err_msg}")
+            # Mark all as failed
+            for phone in phone_list:
+                log_id = await _find_log_id(phone, False)
+                if log_id:
+                    await _update_log(log_id, 'failed', f'联系人导入异常: {err_msg[:200]}', 1)
+            failed_count += len(phone_list)
+
+    # Refresh batch stats
+    if contact_batch_no:
+        await _refresh_batch_stats(contact_batch_no)
+
+    return {"imported": imported_count, "failed": failed_count, "retry": retry_count}
+
+
 async def _refresh_batch_stats(batch_no: str):
     """Call Java API to refresh contact import batch statistics."""
     try:
