@@ -471,6 +471,7 @@ async def _send_auto_reply(client, phone: str, account_id: int,
         await _write_send_fail_log(phone, account_id, my_nickname, user_id,
                                   friend_nickname, friend_phone, 'text',
                                   text, str(e))
+        raise
 
 
 async def _save_sent_message(phone: str, account_id: int, user_id: int,
