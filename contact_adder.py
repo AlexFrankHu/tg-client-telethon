@@ -35,9 +35,13 @@ async def poll_contact_adder():
     while True:
         try:
             await asyncio.sleep(POLL_INTERVAL)
-            await _process_pending_logs()
         except asyncio.CancelledError:
             break
+        try:
+            await _process_pending_logs()
+        except asyncio.CancelledError:
+            logger.warning("[ContactAdder] CancelledError during processing, will retry next cycle")
+            continue
         except Exception as e:
             logger.error(f"[ContactAdder] poll error: {e}")
 
@@ -65,7 +69,6 @@ async def _process_pending_logs():
 
             # Check if account is online
             if account_phone not in client_manager.active_clients:
-                logger.debug(f"[ContactAdder] 跳过 log_id={log_id}: 账号 {account_phone} 不在线")
                 continue
 
             client = client_manager.active_clients[account_phone]
