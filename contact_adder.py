@@ -73,10 +73,15 @@ async def _process_pending_logs():
 
             client = client_manager.active_clients[account_phone]
 
-            # Skip if client is disconnected to avoid hanging
+            # Try to reconnect if client is disconnected
             if not client.is_connected():
-                logger.warning(f"[ContactAdder] log_id={log_id}: {account_phone} 已断开连接，跳过")
-                continue
+                logger.warning(f"[ContactAdder] log_id={log_id}: {account_phone} 已断开连接，尝试重连")
+                try:
+                    await asyncio.wait_for(client.connect(), timeout=15)
+                    logger.info(f"[ContactAdder] {account_phone} 重连成功")
+                except Exception as e:
+                    logger.warning(f"[ContactAdder] {account_phone} 重连失败: {e}，跳过")
+                    continue
 
             logger.info(f"[ContactAdder] 处理 log_id={log_id}: {account_phone} -> {contact_display} (retry={retry_count}, username={is_username})")
 
