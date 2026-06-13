@@ -96,13 +96,16 @@ async def handle_incoming_message(phone: str, event, client):
         # Build context & call API
         my_nickname = account.get('nickname') or phone
         friend_nickname = contact.get('nickname') or str(user_id)
+        friend_phone_num = contact.get('phone_number')
         logger.info(f"[{phone}] [AutoReply] 准备请求自动回复: state=0, "
                     f"account_id={account_id}, user_id={user_id}, "
                     f"my_nickname={my_nickname}, friend_nickname={friend_nickname}")
 
         chat_context = await _build_chat_context(account_id, user_id, my_nickname, friend_nickname)
 
-        reply = await _get_reply_content(
+        request_params_str = f"state=0, agent_gender=1, customer_gender=2, my_nickname={my_nickname}, customer_name={friend_nickname}"
+
+        reply, api_error = await _get_reply_content(
             state=0,
             my_nickname=my_nickname,
             customer_name=friend_nickname,
@@ -110,13 +113,38 @@ async def handle_incoming_message(phone: str, event, client):
         )
         if reply:
             await asyncio.sleep(2)  # brief delay for naturalness
-            friend_phone_num = contact.get('phone_number')
-            await _send_auto_reply(client, phone, account_id, user_id, reply,
-                                   my_nickname=my_nickname, friend_nickname=friend_nickname,
-                                   friend_phone=friend_phone_num)
-            logger.info(f"[{phone}] [AutoReply] 自动回复成功: user_id={user_id}, state=0")
+            try:
+                await _send_auto_reply(client, phone, account_id, user_id, reply,
+                                       my_nickname=my_nickname, friend_nickname=friend_nickname,
+                                       friend_phone=friend_phone_num)
+                logger.info(f"[{phone}] [AutoReply] 自动回复成功: user_id={user_id}, state=0")
+                await database.insert_auto_reply_log(
+                    account_phone=phone, account_nickname=my_nickname,
+                    friend_user_id=user_id, friend_nickname=friend_nickname,
+                    friend_phone=friend_phone_num, trigger_type='incoming',
+                    state=0, request_params=request_params_str,
+                    chat_context=chat_context, reply_content=reply,
+                    send_result='success')
+            except Exception as send_err:
+                logger.error(f"[{phone}] [AutoReply] 发送消息失败: user_id={user_id}, error={send_err}")
+                await database.insert_auto_reply_log(
+                    account_phone=phone, account_nickname=my_nickname,
+                    friend_user_id=user_id, friend_nickname=friend_nickname,
+                    friend_phone=friend_phone_num, trigger_type='incoming',
+                    state=0, request_params=request_params_str,
+                    chat_context=chat_context, reply_content=reply,
+                    send_result='failed', error_reason=str(send_err))
+                raise
         else:
-            logger.warning(f"[{phone}] [AutoReply] API未返回有效回复内容")
+            result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
+            logger.warning(f"[{phone}] [AutoReply] API未返回有效回复内容: {api_error}")
+            await database.insert_auto_reply_log(
+                account_phone=phone, account_nickname=my_nickname,
+                friend_user_id=user_id, friend_nickname=friend_nickname,
+                friend_phone=friend_phone_num, trigger_type='incoming',
+                state=0, request_params=request_params_str,
+                chat_context=chat_context, reply_content=None,
+                send_result=result_type, error_reason=api_error)
     except FloodWaitError as e:
         logger.warning(f"[{phone}] [AutoReply] FloodWait: 需要等待{e.seconds}s后再发消息")
         await asyncio.sleep(e.seconds + 5)
@@ -173,21 +201,50 @@ async def _process_proactive_replies():
 
             my_nickname = row.get('account_nickname') or phone
             friend_nickname = row.get('nickname') or str(user_id)
+            friend_phone_num = row.get('phone_number')
             chat_context = await _build_chat_context(account_id, user_id, my_nickname, friend_nickname)
 
-            reply = await _get_reply_content(
+            request_params_str = f"state={state}, agent_gender=1, customer_gender=2, my_nickname={my_nickname}, customer_name={friend_nickname}"
+
+            reply, api_error = await _get_reply_content(
                 state=state,
                 my_nickname=my_nickname,
                 customer_name=friend_nickname,
                 chat_context=chat_context,
             )
             if reply:
-                friend_phone_num = row.get('phone_number')
-                await _send_auto_reply(client, phone, account_id, user_id, reply,
-                                       my_nickname=my_nickname, friend_nickname=friend_nickname,
-                                       friend_phone=friend_phone_num)
-                logger.info(f"[{phone}] Proactive auto-reply to {user_id} (state={state})")
+                try:
+                    await _send_auto_reply(client, phone, account_id, user_id, reply,
+                                           my_nickname=my_nickname, friend_nickname=friend_nickname,
+                                           friend_phone=friend_phone_num)
+                    logger.info(f"[{phone}] Proactive auto-reply to {user_id} (state={state})")
+                    await database.insert_auto_reply_log(
+                        account_phone=phone, account_nickname=my_nickname,
+                        friend_user_id=user_id, friend_nickname=friend_nickname,
+                        friend_phone=friend_phone_num, trigger_type='polling',
+                        state=state, request_params=request_params_str,
+                        chat_context=chat_context, reply_content=reply,
+                        send_result='success')
+                except Exception as send_err:
+                    logger.error(f"[{phone}] 发送失败: user_id={user_id}, error={send_err}")
+                    await database.insert_auto_reply_log(
+                        account_phone=phone, account_nickname=my_nickname,
+                        friend_user_id=user_id, friend_nickname=friend_nickname,
+                        friend_phone=friend_phone_num, trigger_type='polling',
+                        state=state, request_params=request_params_str,
+                        chat_context=chat_context, reply_content=reply,
+                        send_result='failed', error_reason=str(send_err))
+                    raise
                 await asyncio.sleep(5)  # rate-limit between sends
+            else:
+                result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
+                await database.insert_auto_reply_log(
+                    account_phone=phone, account_nickname=my_nickname,
+                    friend_user_id=user_id, friend_nickname=friend_nickname,
+                    friend_phone=friend_phone_num, trigger_type='polling',
+                    state=state, request_params=request_params_str,
+                    chat_context=chat_context, reply_content=None,
+                    send_result=result_type, error_reason=api_error)
         except FloodWaitError as e:
             logger.warning(f"[{phone}] FloodWait: need to wait {e.seconds}s, pausing...")
             await asyncio.sleep(min(e.seconds + 5, 300))  # wait as Telegram requires, cap at 5min
@@ -256,8 +313,9 @@ async def _calculate_state(account_id: int, chat_id: int,
 # ---------------------------------------------------------------------------
 
 async def _get_reply_content(state: int, my_nickname: str,
-                             customer_name: str, chat_context: str) -> str | None:
-    """Call http://127.0.0.1:8000/generate-reply and return the reply text."""
+                             customer_name: str, chat_context: str) -> tuple:
+    """Call http://127.0.0.1:8000/generate-reply and return (reply_text, error_reason).
+    On success: (reply_text, None). On failure: (None, error_reason)."""
     try:
         body = {
             "state": state,
@@ -282,12 +340,15 @@ async def _get_reply_content(state: int, my_nickname: str,
                 logger.info(f"[AutoReply] 解析回复内容: {reply}")
                 if not reply or not reply.strip():
                     logger.info("[AutoReply] 回复内容为空，不发送")
-                    return None
-                return reply
-            logger.warning(f"[AutoReply] API返回非200: {resp.status_code}, body={resp.text[:500]}")
+                    return (None, "API返回回复内容为空")
+                return (reply, None)
+            error_msg = f"API返回非200: status={resp.status_code}, body={resp.text[:500]}"
+            logger.warning(f"[AutoReply] {error_msg}")
+            return (None, error_msg)
     except Exception as e:
-        logger.error(f"[AutoReply] API请求异常: {e}")
-    return None
+        error_msg = f"API请求异常: {e}"
+        logger.error(f"[AutoReply] {error_msg}")
+        return (None, error_msg)
 
 
 # ---------------------------------------------------------------------------

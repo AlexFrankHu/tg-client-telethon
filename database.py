@@ -306,6 +306,35 @@ async def insert_send_fail_log(phone: str, tg_account_id: int = None,
                                     content, error_reason, datetime.now()))
 
 
+async def insert_auto_reply_log(account_phone: str, account_nickname: str = None,
+                               friend_user_id: int = None, friend_nickname: str = None,
+                               friend_phone: str = None, trigger_type: str = None,
+                               state: int = None, request_params: str = None,
+                               chat_context: str = None, reply_content: str = None,
+                               send_result: str = None, error_reason: str = None):
+    """Insert an auto-reply log record."""
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                sql = """
+                    INSERT INTO tg_auto_reply_log
+                    (account_phone, account_nickname, friend_user_id, friend_nickname,
+                     friend_phone, trigger_type, state, request_params, chat_context,
+                     reply_content, send_result, error_reason, create_time)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """
+                await cur.execute(sql, (account_phone, account_nickname, friend_user_id,
+                                        friend_nickname, friend_phone, trigger_type,
+                                        state, request_params,
+                                        chat_context[:2000] if chat_context else None,
+                                        reply_content[:2000] if reply_content else None,
+                                        send_result,
+                                        error_reason[:500] if error_reason else None,
+                                        datetime.now()))
+    except Exception as e:
+        logger.error(f"写入自动回复日志失败: {e}")
+
+
 async def update_import_account_status(phone: str, status: str, reason: str = None,
                                         tg_user_id: int = None, nickname: str = None,
                                         username: str = None):
