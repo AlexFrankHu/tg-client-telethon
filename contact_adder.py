@@ -175,6 +175,7 @@ async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count):
         last_name=""
     )
     result = await client(ImportContactsRequest([input_contact]))
+    logger.info(f"[ContactAdder] log_id={log_id}: ImportContacts结果: imported={len(result.imported)}, users={len(result.users)}, retry_contacts={result.retry_contacts}")
 
     if result.imported:
         user = result.users[0] if result.users else None
@@ -189,9 +190,68 @@ async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count):
         await _update_log(log_id, 'skipped', '已是好友', retry_count + 1)
         if user_id:
             await _ensure_contact_record(account_id, user_id, contact_phone)
+    elif result.retry_contacts:
+        logger.warning(f"[ContactAdder] log_id={log_id}: ImportContacts被限制, retry_contacts={result.retry_contacts}, 尝试通过搜索添加")
+        # retry_contacts means user exists but import was rate-limited, try fallback
+        fallback_ok = await _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count)
+        if not fallback_ok:
+            await _update_log(log_id, 'pending', f'ImportContacts被限制,搜索也失败,将重试', retry_count + 1)
     else:
-        logger.warning(f"[ContactAdder] log_id={log_id}: 该号码未注册Telegram或无法添加")
-        await _update_log(log_id, 'failed', '该号码未注册Telegram或无法添加', retry_count + 1)
+        # Fallback: try to find the user by phone and add via AddContactRequest
+        logger.warning(f"[ContactAdder] log_id={log_id}: ImportContacts返回空, 尝试通过手机号搜索用户")
+        fallback_ok = await _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count)
+        if not fallback_ok:
+            await _update_log(log_id, 'failed', '该号码未注册Telegram或无法添加', retry_count + 1)
+
+
+async def _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count):
+    """Fallback: try ResolvePhone or get_entity to find user, then AddContactRequest."""
+    from telethon.tl.functions.contacts import AddContactRequest, ResolvePhoneRequest
+    from telethon.tl.types import InputUser
+
+    user = None
+
+    # Method 1: Try ResolvePhoneRequest (Telegram layer 160+)
+    try:
+        phone_clean = normalized_phone.replace("+", "")
+        resolved = await client(ResolvePhoneRequest(phone=phone_clean))
+        if resolved and resolved.users:
+            user = resolved.users[0]
+            logger.info(f"[ContactAdder] log_id={log_id}: ResolvePhone找到用户 user_id={user.id}")
+    except Exception as e:
+        logger.info(f"[ContactAdder] log_id={log_id}: ResolvePhone失败: {e}")
+
+    # Method 2: Try get_entity with phone number
+    if not user:
+        try:
+            entity = await client.get_entity(normalized_phone)
+            if entity:
+                user = entity
+                logger.info(f"[ContactAdder] log_id={log_id}: get_entity找到用户 user_id={user.id}")
+        except Exception as e:
+            logger.info(f"[ContactAdder] log_id={log_id}: get_entity失败: {e}")
+
+    if not user:
+        logger.warning(f"[ContactAdder] log_id={log_id}: 所有方式都无法找到用户 {normalized_phone}")
+        return False
+
+    # Found the user, now add as contact via AddContactRequest
+    try:
+        input_user = InputUser(user_id=user.id, access_hash=user.access_hash)
+        await client(AddContactRequest(
+            id=input_user,
+            first_name=user.first_name or normalized_phone,
+            last_name=user.last_name or "",
+            phone=normalized_phone,
+            add_phone_privacy_exception=True
+        ))
+        logger.info(f"[ContactAdder] log_id={log_id}: AddContactRequest成功, user_id={user.id}")
+        await _update_log(log_id, 'success', f'通过搜索添加成功(user_id={user.id})', retry_count + 1)
+        await _ensure_contact_record(account_id, user.id, contact_phone)
+        return True
+    except Exception as e:
+        logger.error(f"[ContactAdder] log_id={log_id}: AddContactRequest失败: {e}")
+        raise  # let outer handler deal with it
 
 
 async def _add_by_username(client, log_id, account_id, contact_username, retry_count):
