@@ -3,6 +3,7 @@ import asyncio
 import logging
 import random
 
+import aiohttp
 import aiomysql
 from telethon.tl.functions.contacts import ImportContactsRequest, GetContactsRequest
 from telethon.tl.types import InputPhoneContact
@@ -53,6 +54,7 @@ async def _process_pending_logs():
         return
 
     logger.info(f"[ContactAdder] Found {len(pending_logs)} pending assign logs")
+    affected_batch_nos = set()
 
     for log_entry in pending_logs:
         try:
@@ -61,6 +63,7 @@ async def _process_pending_logs():
             account_id = log_entry['account_id']
             contact_phone = log_entry.get('contact_phone')
             contact_username = log_entry.get('contact_username')
+            contact_batch_no = log_entry.get('contact_batch_no')
             retry_count = log_entry.get('retry_count') or 0
 
             # Determine if this is a username-based or phone-based add
@@ -119,6 +122,9 @@ async def _process_pending_logs():
                 else:
                     await _update_log(log_id, 'failed', error_msg[:300], new_retry)
 
+            if contact_batch_no:
+                affected_batch_nos.add(contact_batch_no)
+
             await asyncio.sleep(2)  # rate-limit between add operations
 
         except asyncio.CancelledError:
@@ -126,6 +132,10 @@ async def _process_pending_logs():
             continue
         except Exception as e:
             logger.error(f"[ContactAdder] 处理 log_id={log_entry.get('id')} 异常: {e}")
+
+    # Refresh stats for all affected contact batches
+    for batch_no in affected_batch_nos:
+        await _refresh_batch_stats(batch_no)
 
 
 async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count):
@@ -292,3 +302,17 @@ async def _ensure_contact_record(account_id: int, user_id: int, phone: str):
                     )
     except Exception as e:
         logger.error(f"[ContactAdder] 写入tg_contact失败: {e}")
+
+
+async def _refresh_batch_stats(batch_no: str):
+    """Call Java API to refresh contact import batch statistics."""
+    try:
+        url = f"http://localhost:8809/tg/import/refreshContactBatchStats?batchNo={batch_no}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    logger.info(f"[ContactAdder] 已刷新批次统计: {batch_no}")
+                else:
+                    logger.warning(f"[ContactAdder] 刷新批次统计失败: {batch_no}, status={resp.status}")
+    except Exception as e:
+        logger.warning(f"[ContactAdder] 刷新批次统计异常: {batch_no}, {e}")
