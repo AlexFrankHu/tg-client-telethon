@@ -67,20 +67,40 @@ async def _process_pending_logs():
             is_username = bool(contact_username and not contact_phone)
             contact_display = contact_username if is_username else contact_phone
 
-            # Check if account is online
+            # Check if account is online and connected
             if account_phone not in client_manager.active_clients:
                 continue
 
             client = client_manager.active_clients[account_phone]
 
+            # Skip if client is disconnected to avoid hanging
+            if not client.is_connected():
+                logger.warning(f"[ContactAdder] log_id={log_id}: {account_phone} 已断开连接，跳过")
+                continue
+
             logger.info(f"[ContactAdder] 处理 log_id={log_id}: {account_phone} -> {contact_display} (retry={retry_count}, username={is_username})")
 
-            # Try to add contact
+            # Try to add contact with timeout to prevent hanging
             try:
                 if is_username:
-                    await _add_by_username(client, log_id, account_id, contact_username, retry_count)
+                    await asyncio.wait_for(
+                        _add_by_username(client, log_id, account_id, contact_username, retry_count),
+                        timeout=60
+                    )
                 else:
-                    await _add_by_phone(client, log_id, account_id, contact_phone, retry_count)
+                    await asyncio.wait_for(
+                        _add_by_phone(client, log_id, account_id, contact_phone, retry_count),
+                        timeout=60
+                    )
+
+            except asyncio.TimeoutError:
+                new_retry = retry_count + 1
+                logger.error(f"[ContactAdder] log_id={log_id}: 操作超时(60s)")
+                await _update_log(log_id, 'pending', '操作超时将重试', new_retry)
+
+            except asyncio.CancelledError:
+                logger.warning(f"[ContactAdder] log_id={log_id}: CancelledError，跳过")
+                continue
 
             except Exception as e:
                 error_msg = str(e)
@@ -96,6 +116,9 @@ async def _process_pending_logs():
 
             await asyncio.sleep(2)  # rate-limit between add operations
 
+        except asyncio.CancelledError:
+            logger.warning(f"[ContactAdder] CancelledError in log processing loop, continuing")
+            continue
         except Exception as e:
             logger.error(f"[ContactAdder] 处理 log_id={log_entry.get('id')} 异常: {e}")
 
