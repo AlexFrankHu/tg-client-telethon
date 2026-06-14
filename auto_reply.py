@@ -491,6 +491,7 @@ async def _save_sent_message(phone: str, account_id: int, user_id: int,
                      send_time, content_type, content),
                 )
         logger.info(f"[{phone}] [AutoReply] 消息已录入数据库: msg_id={sent_msg.id}, type={content_type}")
+        await database.increment_msg_count(account_id, is_outgoing=True)
     except Exception as e:
         logger.error(f"[{phone}] [AutoReply] 录入消息到数据库失败: {e}")
 

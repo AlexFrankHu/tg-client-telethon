@@ -220,6 +220,27 @@ async def update_account_status(phone: str, status: str):
             )
 
 
+async def increment_msg_count(account_id: int, is_outgoing: bool):
+    """Increment message count for an account."""
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                if is_outgoing:
+                    await cur.execute(
+                        f"UPDATE `{TABLE_NAME}` SET total_msg_count = IFNULL(total_msg_count,0)+1, "
+                        f"sent_msg_count = IFNULL(sent_msg_count,0)+1 WHERE id = %s",
+                        (account_id,)
+                    )
+                else:
+                    await cur.execute(
+                        f"UPDATE `{TABLE_NAME}` SET total_msg_count = IFNULL(total_msg_count,0)+1, "
+                        f"recv_msg_count = IFNULL(recv_msg_count,0)+1 WHERE id = %s",
+                        (account_id,)
+                    )
+    except Exception as e:
+        logger.error(f"Failed to increment msg count for account {account_id}: {e}")
+
+
 async def get_all_accounts():
     """Get all accounts."""
     async with pool.acquire() as conn:
