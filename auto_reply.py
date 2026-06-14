@@ -92,34 +92,34 @@ async def handle_incoming_message(phone: str, event, client):
             logger.info(f"[{phone}] [AutoReply] 跳过: 好友 {user_id} 非后台导入好友")
             return
 
-        # Build context & call API
-        my_nickname = account.get('nickname') or phone
-        friend_nickname = contact.get('nickname') or str(user_id)
+        # Build context & call API — use TG user IDs instead of nicknames
+        account_tg_id = str(account.get('tg_user_id') or '')
+        friend_tg_id = str(user_id)
         friend_phone_num = contact.get('phone_number')
         logger.info(f"[{phone}] [AutoReply] 准备请求自动回复: state=0, "
                     f"account_id={account_id}, user_id={user_id}, "
-                    f"my_nickname={my_nickname}, friend_nickname={friend_nickname}")
+                    f"account_tg_id={account_tg_id}, friend_tg_id={friend_tg_id}")
 
-        chat_context = await _build_chat_context(account_id, user_id, my_nickname, friend_nickname)
+        chat_context = await _build_chat_context(account_id, user_id, account_tg_id, friend_tg_id)
 
-        request_params_str = f"state=0, agent_gender=1, customer_gender=2, my_nickname={my_nickname}, customer_name={friend_nickname}"
+        request_params_str = f"state=0, agent_gender=1, customer_gender=2, my_nickname={account_tg_id}, customer_name={friend_tg_id}"
 
         reply, api_error = await _get_reply_content(
             state=0,
-            my_nickname=my_nickname,
-            customer_name=friend_nickname,
+            my_nickname=account_tg_id,
+            customer_name=friend_tg_id,
             chat_context=chat_context,
         )
         if reply:
             await asyncio.sleep(2)  # brief delay for naturalness
             try:
                 await _send_auto_reply(client, phone, account_id, user_id, reply,
-                                       my_nickname=my_nickname, friend_nickname=friend_nickname,
+                                       my_nickname=account_tg_id, friend_nickname=friend_tg_id,
                                        friend_phone=friend_phone_num)
                 logger.info(f"[{phone}] [AutoReply] 自动回复成功: user_id={user_id}, state=0")
                 await database.insert_auto_reply_log(
-                    account_phone=phone, account_nickname=my_nickname,
-                    friend_user_id=user_id, friend_nickname=friend_nickname,
+                    account_phone=phone, account_nickname=account_tg_id,
+                    friend_user_id=user_id, friend_nickname=friend_tg_id,
                     friend_phone=friend_phone_num, trigger_type='incoming',
                     state=0, request_params=request_params_str,
                     chat_context=chat_context, reply_content=reply,
@@ -127,8 +127,8 @@ async def handle_incoming_message(phone: str, event, client):
             except Exception as send_err:
                 logger.error(f"[{phone}] [AutoReply] 发送消息失败: user_id={user_id}, error={send_err}")
                 await database.insert_auto_reply_log(
-                    account_phone=phone, account_nickname=my_nickname,
-                    friend_user_id=user_id, friend_nickname=friend_nickname,
+                    account_phone=phone, account_nickname=account_tg_id,
+                    friend_user_id=user_id, friend_nickname=friend_tg_id,
                     friend_phone=friend_phone_num, trigger_type='incoming',
                     state=0, request_params=request_params_str,
                     chat_context=chat_context, reply_content=reply,
@@ -138,8 +138,8 @@ async def handle_incoming_message(phone: str, event, client):
             result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
             logger.warning(f"[{phone}] [AutoReply] API未返回有效回复内容: {api_error}")
             await database.insert_auto_reply_log(
-                account_phone=phone, account_nickname=my_nickname,
-                friend_user_id=user_id, friend_nickname=friend_nickname,
+                account_phone=phone, account_nickname=account_tg_id,
+                friend_user_id=user_id, friend_nickname=friend_tg_id,
                 friend_phone=friend_phone_num, trigger_type='incoming',
                 state=0, request_params=request_params_str,
                 chat_context=chat_context, reply_content=None,
@@ -198,28 +198,28 @@ async def _process_proactive_replies():
             if state < 0:
                 continue
 
-            my_nickname = row.get('account_nickname') or phone
-            friend_nickname = row.get('nickname') or str(user_id)
+            account_tg_id = str(row.get('account_tg_user_id') or '')
+            friend_tg_id = str(user_id)
             friend_phone_num = row.get('phone_number')
-            chat_context = await _build_chat_context(account_id, user_id, my_nickname, friend_nickname)
+            chat_context = await _build_chat_context(account_id, user_id, account_tg_id, friend_tg_id)
 
-            request_params_str = f"state={state}, agent_gender=1, customer_gender=2, my_nickname={my_nickname}, customer_name={friend_nickname}"
+            request_params_str = f"state={state}, agent_gender=1, customer_gender=2, my_nickname={account_tg_id}, customer_name={friend_tg_id}"
 
             reply, api_error = await _get_reply_content(
                 state=state,
-                my_nickname=my_nickname,
-                customer_name=friend_nickname,
+                my_nickname=account_tg_id,
+                customer_name=friend_tg_id,
                 chat_context=chat_context,
             )
             if reply:
                 try:
                     await _send_auto_reply(client, phone, account_id, user_id, reply,
-                                           my_nickname=my_nickname, friend_nickname=friend_nickname,
+                                           my_nickname=account_tg_id, friend_nickname=friend_tg_id,
                                            friend_phone=friend_phone_num)
                     logger.info(f"[{phone}] Proactive auto-reply to {user_id} (state={state})")
                     await database.insert_auto_reply_log(
-                        account_phone=phone, account_nickname=my_nickname,
-                        friend_user_id=user_id, friend_nickname=friend_nickname,
+                        account_phone=phone, account_nickname=account_tg_id,
+                        friend_user_id=user_id, friend_nickname=friend_tg_id,
                         friend_phone=friend_phone_num, trigger_type='polling',
                         state=state, request_params=request_params_str,
                         chat_context=chat_context, reply_content=reply,
@@ -227,8 +227,8 @@ async def _process_proactive_replies():
                 except Exception as send_err:
                     logger.error(f"[{phone}] 发送失败: user_id={user_id}, error={send_err}")
                     await database.insert_auto_reply_log(
-                        account_phone=phone, account_nickname=my_nickname,
-                        friend_user_id=user_id, friend_nickname=friend_nickname,
+                        account_phone=phone, account_nickname=account_tg_id,
+                        friend_user_id=user_id, friend_nickname=friend_tg_id,
                         friend_phone=friend_phone_num, trigger_type='polling',
                         state=state, request_params=request_params_str,
                         chat_context=chat_context, reply_content=reply,
@@ -238,8 +238,8 @@ async def _process_proactive_replies():
             else:
                 result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
                 await database.insert_auto_reply_log(
-                    account_phone=phone, account_nickname=my_nickname,
-                    friend_user_id=user_id, friend_nickname=friend_nickname,
+                    account_phone=phone, account_nickname=account_tg_id,
+                    friend_user_id=user_id, friend_nickname=friend_tg_id,
                     friend_phone=friend_phone_num, trigger_type='polling',
                     state=state, request_params=request_params_str,
                     chat_context=chat_context, reply_content=None,
@@ -636,7 +636,8 @@ async def _get_eligible_contacts() -> list:
     sql = f"""
         SELECT c.*,
                a.id AS account_id, a.phone,
-               a.nickname AS account_nickname
+               a.nickname AS account_nickname,
+               a.tg_user_id AS account_tg_user_id
         FROM tg_contact c
         JOIN tg_telethon_account a ON c.tg_account_id = a.id
         WHERE c.auto_reply = 1
