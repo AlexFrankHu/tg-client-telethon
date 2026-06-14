@@ -241,6 +241,29 @@ async def increment_msg_count(account_id: int, is_outgoing: bool):
         logger.error(f"Failed to increment msg count for account {account_id}: {e}")
 
 
+async def increment_contact_msg_count(account_id: int, user_id: int, is_outgoing: bool):
+    """Increment message count for a contact (friend-level stats)."""
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                if is_outgoing:
+                    await cur.execute(
+                        "UPDATE tg_contact SET total_msg_count = IFNULL(total_msg_count,0)+1, "
+                        "account_sent_count = IFNULL(account_sent_count,0)+1 "
+                        "WHERE tg_account_id = %s AND user_id = %s",
+                        (account_id, user_id)
+                    )
+                else:
+                    await cur.execute(
+                        "UPDATE tg_contact SET total_msg_count = IFNULL(total_msg_count,0)+1, "
+                        "friend_sent_count = IFNULL(friend_sent_count,0)+1 "
+                        "WHERE tg_account_id = %s AND user_id = %s",
+                        (account_id, user_id)
+                    )
+    except Exception as e:
+        logger.error(f"Failed to increment contact msg count for account {account_id}, user {user_id}: {e}")
+
+
 async def get_all_accounts():
     """Get all accounts."""
     async with pool.acquire() as conn:

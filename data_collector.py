@@ -213,6 +213,7 @@ async def save_realtime_message(phone: str, event, client=None):
             # Increment message count (exclude system accounts)
             if chat_id and chat_id != 777000:
                 await database.increment_msg_count(account_id, is_outgoing=bool(msg.out))
+                await database.increment_contact_msg_count(account_id, chat_id, is_outgoing=bool(msg.out))
 
         # If we have a client, try to add the sender as a contact record
         if client and msg and not msg.out:
