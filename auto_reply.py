@@ -80,8 +80,7 @@ async def handle_incoming_message(phone: str, event, client):
             return
         account_id = account['id']
 
-        # Contact info — wait briefly for save_realtime_message to upsert contact
-        await asyncio.sleep(1)
+        # Contact info (save_realtime_message already completed before this)
         contact = await _get_contact(account_id, user_id)
         if not contact:
             logger.info(f"[{phone}] [AutoReply] 跳过: 好友 {user_id} 不在联系人表中")
@@ -596,7 +595,7 @@ def _format_message_content(msg: dict) -> str:
 
 async def _build_chat_context(account_id: int, chat_id: int,
                               my_nickname: str, friend_nickname: str,
-                              limit: int = 20) -> str:
+                              limit: int = 60) -> str:
     """Build context string: {nickname}[{time}]:{content} per line."""
     messages = await _get_chat_messages(account_id, chat_id, limit)
     if not messages:

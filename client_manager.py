@@ -189,8 +189,9 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
                         await client.send_read_acknowledge(event.chat_id, msg)
                     except Exception as e:
                         logger.warning(f"[{phone}] Failed to mark message as read: {e}")
-                asyncio.create_task(data_collector.save_realtime_message(phone, event, client))
-                # Trigger auto-reply for incoming private messages
+                # Save message to DB first, then trigger auto-reply
+                await data_collector.save_realtime_message(phone, event, client)
+                # Trigger auto-reply for incoming private messages (after DB save)
                 if msg and not msg.out:
                     asyncio.create_task(auto_reply.handle_incoming_message(phone, event, client))
             except Exception as e:
