@@ -506,41 +506,61 @@ async def send_greeting(request: Request):
         return {"success": False, "error": "账号未在线或未连接"}
 
     try:
+        import os
+        from datetime import datetime, timezone, timedelta
+        sent_msg = None
+        content_type = 'text'
+
         # Send image if provided
         if image_path:
             # Map /profile/... to actual file path on server
             actual_path = "/home/ubuntu/telegram-project/uploadPath" + image_path.replace("/profile", "", 1)
-            import os
             if os.path.exists(actual_path):
                 if content:
-                    await client.send_file(user_id, actual_path, caption=content)
+                    sent_msg = await client.send_file(user_id, actual_path, caption=content)
                 else:
-                    await client.send_file(user_id, actual_path)
+                    sent_msg = await client.send_file(user_id, actual_path)
+                content_type = 'photo'
             else:
                 # If image file not found, just send text
                 logger.warning(f"[{phone}] 问候语图片不存在: {actual_path}, 仅发送文字")
                 if content:
-                    await client.send_message(user_id, content)
+                    sent_msg = await client.send_message(user_id, content)
         else:
             if content:
-                await client.send_message(user_id, content)
+                sent_msg = await client.send_message(user_id, content)
             else:
                 return {"success": False, "error": "问候语内容为空"}
 
-        # Update last_send_time
+        # Save to chat message table and update statistics
         try:
-            from datetime import datetime
+            beijing_tz = timezone(timedelta(hours=8))
+            send_time = sent_msg.date.astimezone(beijing_tz) if sent_msg and sent_msg.date else datetime.now(beijing_tz)
+            msg_id = sent_msg.id if sent_msg else 0
+            text_to_save = content or '[图片]'
+
             async with database.pool.acquire() as conn:
                 async with conn.cursor() as cur:
+                    # Save chat message
+                    await cur.execute(
+                        """INSERT INTO tg_chat_message
+                           (tg_account_id, chat_id, message_id, sender_user_id,
+                            is_outgoing, send_time, content_type, text_content, create_time)
+                           VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
+                           ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
+                        (account_id, user_id, msg_id, None,
+                         send_time, content_type, text_to_save),
+                    )
+                    # Update last_send_time
                     await cur.execute(
                         """UPDATE tg_contact SET last_send_time = %s
                            WHERE tg_account_id = %s AND user_id = %s""",
-                        (datetime.now(), account_id, user_id)
+                        (send_time, account_id, user_id)
                     )
             await database.increment_msg_count(account_id, is_outgoing=True)
             await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
         except Exception as e:
-            logger.error(f"[{phone}] 更新发送统计失败: {e}")
+            logger.error(f"[{phone}] 更新发送统计/录入聊天记录失败: {e}")
 
         return {"success": True, "message": "问候语发送成功"}
     except Exception as e:
