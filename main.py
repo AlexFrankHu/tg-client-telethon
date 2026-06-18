@@ -494,14 +494,13 @@ async def send_greeting(request: Request):
         return {"success": False, "error": "accountId and userId are required"}
 
     # Find client by account_id
-    client = None
-    phone = None
-    for p, c in client_manager.clients.items():
-        acc = client_manager.account_info.get(p, {})
-        if acc.get("id") == account_id:
-            client = c
-            phone = p
-            break
+    accounts = await database.get_all_accounts()
+    account = next((a for a in accounts if a["id"] == account_id), None)
+    if not account:
+        return {"success": False, "error": "账号不存在"}
+
+    phone = account["phone"]
+    client = client_manager.active_clients.get(phone)
 
     if not client or not client.is_connected():
         return {"success": False, "error": "账号未在线或未连接"}
