@@ -133,6 +133,8 @@ async def handle_incoming_message(phone: str, event, client):
                     state=0, request_params=request_params_str,
                     chat_context=chat_context, reply_content=reply,
                     send_result='failed', error_reason=str(send_err))
+                if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
+                    await _disable_contact_auto_reply(account_id, user_id, phone)
                 raise
         else:
             result_type = 'api_error' if api_error and 'API' in api_error else 'no_reply'
@@ -233,6 +235,8 @@ async def _process_proactive_replies():
                         state=state, request_params=request_params_str,
                         chat_context=chat_context, reply_content=reply,
                         send_result='failed', error_reason=str(send_err))
+                    if 'PRIVACY_PREMIUM_REQUIRED' in str(send_err):
+                        await _disable_contact_auto_reply(account_id, user_id, phone)
                     raise
                 await asyncio.sleep(5)  # rate-limit between sends
             else:
@@ -393,6 +397,20 @@ async def _download_image(url: str) -> str | None:
     except Exception as e:
         logger.error(f"[AutoReply] 下载图片异常: {url}, error={e}")
     return None
+
+
+async def _disable_contact_auto_reply(account_id: int, user_id: int, phone: str):
+    """Disable auto_reply for a specific contact when PRIVACY_PREMIUM_REQUIRED."""
+    try:
+        async with database.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE tg_contact SET auto_reply = 0 WHERE tg_account_id = %s AND user_id = %s",
+                    (account_id, user_id)
+                )
+        logger.info(f"[{phone}] [AutoReply] 已关闭好友 {user_id} 的自动回复 (PRIVACY_PREMIUM_REQUIRED)")
+    except Exception as e:
+        logger.error(f"[{phone}] [AutoReply] 关闭好友自动回复失败: {e}")
 
 
 async def _send_auto_reply(client, phone: str, account_id: int,

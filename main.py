@@ -5,7 +5,7 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, Query, HTTPException
+from fastapi import FastAPI, WebSocket, Query, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -479,6 +479,74 @@ async def batch_import_contacts_api(req: BatchImportRequest):
         contacts=[c if isinstance(c, dict) else c.dict() for c in req.contacts],
     )
     return result
+
+
+@app.post("/api/send-greeting")
+async def send_greeting(request: Request):
+    """Send a greeting message (text + optional image) to a friend."""
+    data = await request.json()
+    account_id = data.get("accountId")
+    user_id = data.get("userId")
+    content = data.get("content", "")
+    image_path = data.get("imagePath")  # relative path like /profile/upload/...
+
+    if not account_id or not user_id:
+        return {"success": False, "error": "accountId and userId are required"}
+
+    # Find client by account_id
+    client = None
+    phone = None
+    for p, c in client_manager.clients.items():
+        acc = client_manager.account_info.get(p, {})
+        if acc.get("id") == account_id:
+            client = c
+            phone = p
+            break
+
+    if not client or not client.is_connected():
+        return {"success": False, "error": "账号未在线或未连接"}
+
+    try:
+        # Send image if provided
+        if image_path:
+            # Map /profile/... to actual file path on server
+            actual_path = "/home/ubuntu/telegram-project/uploadPath" + image_path.replace("/profile", "", 1)
+            import os
+            if os.path.exists(actual_path):
+                if content:
+                    await client.send_file(user_id, actual_path, caption=content)
+                else:
+                    await client.send_file(user_id, actual_path)
+            else:
+                # If image file not found, just send text
+                logger.warning(f"[{phone}] 问候语图片不存在: {actual_path}, 仅发送文字")
+                if content:
+                    await client.send_message(user_id, content)
+        else:
+            if content:
+                await client.send_message(user_id, content)
+            else:
+                return {"success": False, "error": "问候语内容为空"}
+
+        # Update last_send_time
+        try:
+            from datetime import datetime
+            async with database.pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """UPDATE tg_contact SET last_send_time = %s
+                           WHERE tg_account_id = %s AND user_id = %s""",
+                        (datetime.now(), account_id, user_id)
+                    )
+            await database.increment_msg_count(account_id, is_outgoing=True)
+            await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
+        except Exception as e:
+            logger.error(f"[{phone}] 更新发送统计失败: {e}")
+
+        return {"success": True, "message": "问候语发送成功"}
+    except Exception as e:
+        logger.error(f"[{phone}] 发送问候语失败: account_id={account_id}, user_id={user_id}, error={e}")
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/api/notify/test")
