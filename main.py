@@ -513,52 +513,74 @@ async def send_greeting(request: Request):
         if not content and not image_path:
             return {"success": False, "error": "问候语内容为空"}
 
-        sent_messages = []  # list of (msg, content_type, text_content)
+        sent_msg = None
+        has_image = False
 
-        # Send text message first (if has text)
-        if content:
-            text_msg = await client.send_message(user_id, content)
-            sent_messages.append((text_msg, 'text', content))
-
-        # Send image separately (if has image)
+        # Send: if has image, send as one message (image + caption); if text only, send text
         if image_path:
             actual_path = "/home/ubuntu/telegram-project/uploadPath" + image_path.replace("/profile", "", 1)
             if os.path.exists(actual_path):
-                img_msg = await client.send_file(user_id, actual_path)
-                sent_messages.append((img_msg, 'photo', '[图片]'))
+                # Send image with text as caption (one message)
+                sent_msg = await client.send_file(user_id, actual_path, caption=content or '')
+                has_image = True
             else:
-                logger.warning(f"[{phone}] 问候语图片不存在: {actual_path}")
+                logger.warning(f"[{phone}] 问候语图片不存在: {actual_path}, 仅发送文字")
+                if content:
+                    sent_msg = await client.send_message(user_id, content)
+        else:
+            if content:
+                sent_msg = await client.send_message(user_id, content)
 
-        if not sent_messages:
+        if not sent_msg:
             return {"success": False, "error": "发送失败，无有效内容"}
 
-        # Save each sent message to chat_message table
+        # Save to database: split into separate records for text and image
         try:
+            send_time = sent_msg.date.astimezone(beijing_tz) if sent_msg.date else datetime.now(beijing_tz)
+            msg_id = sent_msg.id
+
             async with database.pool.acquire() as conn:
                 async with conn.cursor() as cur:
-                    last_send_time = None
-                    for sent_msg, c_type, c_text in sent_messages:
-                        send_time = sent_msg.date.astimezone(beijing_tz) if sent_msg.date else datetime.now(beijing_tz)
-                        last_send_time = send_time
+                    # Save text record (if has text)
+                    if content:
                         await cur.execute(
                             """INSERT INTO tg_chat_message
                                (tg_account_id, chat_id, message_id, sender_user_id,
                                 is_outgoing, send_time, content_type, text_content, create_time)
                                VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
                                ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
-                            (account_id, user_id, sent_msg.id, None,
-                             send_time, c_type, c_text),
+                            (account_id, user_id, msg_id, None,
+                             send_time, 'text', content),
                         )
                         await database.increment_msg_count(account_id, is_outgoing=True)
                         await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
 
-                    # Update last_send_time
-                    if last_send_time:
+                    # Save image record (if has image)
+                    if has_image:
+                        # Use msg_id + 100000000 offset to avoid duplicate key with text record
+                        img_msg_id = msg_id + 100000000 if content else msg_id
                         await cur.execute(
-                            """UPDATE tg_contact SET last_send_time = %s
-                               WHERE tg_account_id = %s AND user_id = %s""",
-                            (last_send_time, account_id, user_id)
+                            """INSERT INTO tg_chat_message
+                               (tg_account_id, chat_id, message_id, sender_user_id,
+                                is_outgoing, send_time, content_type, text_content, create_time)
+                               VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
+                               ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
+                            (account_id, user_id, img_msg_id, None,
+                             send_time, 'photo', image_path),
                         )
+                        await database.increment_msg_count(account_id, is_outgoing=True)
+                        await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
+
+                    # If only text (no image), still count once
+                    if not has_image and not content:
+                        pass  # shouldn't happen
+
+                    # Update last_send_time
+                    await cur.execute(
+                        """UPDATE tg_contact SET last_send_time = %s
+                           WHERE tg_account_id = %s AND user_id = %s""",
+                        (send_time, account_id, user_id)
+                    )
         except Exception as e:
             logger.error(f"[{phone}] 更新发送统计/录入聊天记录失败: {e}")
 

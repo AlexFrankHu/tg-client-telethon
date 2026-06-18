@@ -576,54 +576,75 @@ async def _send_greeting_to_new_friend(client, account_id: int, user_id: int, ac
         content = greeting.get('content', '')
         image_path = greeting.get('image_path', '')
         beijing_tz = timezone(timedelta(hours=8))
-        sent_messages = []  # list of (msg, content_type, text_content)
 
-        # Send text first (if has text)
-        if content:
-            text_msg = await client.send_message(user_id, content)
-            sent_messages.append((text_msg, 'text', content))
-            logger.info(f"[{account_phone}] [Greeting] 文字问候语发送成功: user_id={user_id}")
+        if not content and not image_path:
+            logger.info(f"[{account_phone}] [Greeting] 问候语内容为空，跳过")
+            return
 
-        # Send image separately (if has image)
+        sent_msg = None
+        has_image = False
+
+        # Send as one message: image+caption if has image, text only otherwise
         if image_path:
             actual_path = "/home/ubuntu/telegram-project/uploadPath" + image_path.replace("/profile", "", 1)
             if os.path.exists(actual_path):
-                img_msg = await client.send_file(user_id, actual_path)
-                sent_messages.append((img_msg, 'photo', '[图片]'))
-                logger.info(f"[{account_phone}] [Greeting] 图片问候语发送成功: user_id={user_id}")
+                sent_msg = await client.send_file(user_id, actual_path, caption=content or '')
+                has_image = True
+                logger.info(f"[{account_phone}] [Greeting] 图片+文字问候语发送成功: user_id={user_id}")
             else:
-                logger.warning(f"[{account_phone}] [Greeting] 图片不存在: {actual_path}")
+                logger.warning(f"[{account_phone}] [Greeting] 图片不存在: {actual_path}, 仅发送文字")
+                if content:
+                    sent_msg = await client.send_message(user_id, content)
+        else:
+            if content:
+                sent_msg = await client.send_message(user_id, content)
+                logger.info(f"[{account_phone}] [Greeting] 文字问候语发送成功: user_id={user_id}")
 
-        if not sent_messages:
+        if not sent_msg:
             return
 
-        # Save chat records and update statistics
+        # Save to database: split into separate records for text and image
+        send_time = sent_msg.date.astimezone(beijing_tz) if sent_msg.date else datetime.now(beijing_tz)
+        msg_id = sent_msg.id
+
         async with database.pool.acquire() as conn:
             async with conn.cursor() as cur:
-                last_send_time = None
-                for sent_msg, c_type, c_text in sent_messages:
-                    send_time = sent_msg.date.astimezone(beijing_tz) if sent_msg.date else datetime.now(beijing_tz)
-                    last_send_time = send_time
+                # Save text record
+                if content:
                     await cur.execute(
                         """INSERT INTO tg_chat_message
                            (tg_account_id, chat_id, message_id, sender_user_id,
                             is_outgoing, send_time, content_type, text_content, create_time)
                            VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
                            ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
-                        (account_id, user_id, sent_msg.id, None,
-                         send_time, c_type, c_text),
+                        (account_id, user_id, msg_id, None,
+                         send_time, 'text', content),
+                    )
+                    await database.increment_msg_count(account_id, is_outgoing=True)
+                    await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
+
+                # Save image record
+                if has_image:
+                    img_msg_id = msg_id + 100000000 if content else msg_id
+                    await cur.execute(
+                        """INSERT INTO tg_chat_message
+                           (tg_account_id, chat_id, message_id, sender_user_id,
+                            is_outgoing, send_time, content_type, text_content, create_time)
+                           VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
+                           ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
+                        (account_id, user_id, img_msg_id, None,
+                         send_time, 'photo', image_path),
                     )
                     await database.increment_msg_count(account_id, is_outgoing=True)
                     await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
 
                 # Update last_send_time
-                if last_send_time:
-                    await cur.execute(
-                        """UPDATE tg_contact SET last_send_time = %s
-                           WHERE tg_account_id = %s AND user_id = %s""",
-                        (last_send_time, account_id, user_id)
-                    )
+                await cur.execute(
+                    """UPDATE tg_contact SET last_send_time = %s
+                       WHERE tg_account_id = %s AND user_id = %s""",
+                    (send_time, account_id, user_id)
+                )
 
-        logger.info(f"[{account_phone}] [Greeting] 新好友问候语发送完成: user_id={user_id}, 消息数={len(sent_messages)}")
+        logger.info(f"[{account_phone}] [Greeting] 新好友问候语发送完成: user_id={user_id}")
     except Exception as e:
         logger.error(f"[{account_phone}] [Greeting] 发送问候语失败: user_id={user_id}, error={e}")
