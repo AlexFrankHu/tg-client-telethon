@@ -1,7 +1,9 @@
 """Contact adder module - polls pending assign logs and adds contacts via Telethon."""
 import asyncio
 import logging
+import os
 import random
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 import aiomysql
@@ -92,12 +94,12 @@ async def _process_pending_logs():
             try:
                 if is_username:
                     await asyncio.wait_for(
-                        _add_by_username(client, log_id, account_id, contact_username, retry_count),
+                        _add_by_username(client, log_id, account_id, contact_username, retry_count, account_phone),
                         timeout=60
                     )
                 else:
                     await asyncio.wait_for(
-                        _add_by_phone(client, log_id, account_id, contact_phone, retry_count),
+                        _add_by_phone(client, log_id, account_id, contact_phone, retry_count, account_phone),
                         timeout=60
                     )
 
@@ -138,7 +140,7 @@ async def _process_pending_logs():
         await _refresh_batch_stats(batch_no)
 
 
-async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count):
+async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count, account_phone=''):
     """Add contact by phone number using ImportContactsRequest."""
     normalized_phone = contact_phone.strip()
     if not normalized_phone.startswith("+"):
@@ -184,6 +186,7 @@ async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count):
         await _update_log(log_id, 'success', '添加成功', retry_count + 1)
         if user_id:
             await _ensure_contact_record(account_id, user_id, contact_phone)
+            await _send_greeting_to_new_friend(client, account_id, user_id, account_phone)
     elif result.users:
         user_id = result.users[0].id
         logger.info(f"[ContactAdder] log_id={log_id}: 已是好友, user_id={user_id}")
@@ -193,18 +196,18 @@ async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count):
     elif result.retry_contacts:
         logger.warning(f"[ContactAdder] log_id={log_id}: ImportContacts被限制, retry_contacts={result.retry_contacts}, 尝试通过搜索添加")
         # retry_contacts means user exists but import was rate-limited, try fallback
-        fallback_ok = await _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count)
+        fallback_ok = await _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count, account_phone)
         if not fallback_ok:
             await _update_log(log_id, 'pending', f'ImportContacts被限制,搜索也失败,将重试', retry_count + 1)
     else:
         # Fallback: try to find the user by phone and add via AddContactRequest
         logger.warning(f"[ContactAdder] log_id={log_id}: ImportContacts返回空, 尝试通过手机号搜索用户")
-        fallback_ok = await _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count)
+        fallback_ok = await _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count, account_phone)
         if not fallback_ok:
             await _update_log(log_id, 'failed', '该号码未注册Telegram或无法添加', retry_count + 1)
 
 
-async def _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count):
+async def _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count, account_phone=''):
     """Fallback: try ResolvePhone or get_entity to find user, then AddContactRequest."""
     from telethon.tl.functions.contacts import AddContactRequest, ResolvePhoneRequest
     from telethon.tl.types import InputUser
@@ -248,13 +251,14 @@ async def _fallback_add_by_phone(client, log_id, account_id, normalized_phone, c
         logger.info(f"[ContactAdder] log_id={log_id}: AddContactRequest成功, user_id={user.id}")
         await _update_log(log_id, 'success', f'通过搜索添加成功(user_id={user.id})', retry_count + 1)
         await _ensure_contact_record(account_id, user.id, contact_phone)
+        await _send_greeting_to_new_friend(client, account_id, user.id, account_phone)
         return True
     except Exception as e:
         logger.error(f"[ContactAdder] log_id={log_id}: AddContactRequest失败: {e}")
         raise  # let outer handler deal with it
 
 
-async def _add_by_username(client, log_id, account_id, contact_username, retry_count):
+async def _add_by_username(client, log_id, account_id, contact_username, retry_count, account_phone=''):
     """Add contact by username using get_entity + send_message or AddContactRequest."""
     username = contact_username.strip()
     if username.startswith("@"):
@@ -308,6 +312,7 @@ async def _add_by_username(client, log_id, account_id, contact_username, retry_c
         logger.info(f"[ContactAdder] log_id={log_id}: @{username} 添加成功, user_id={user_id}")
         await _update_log(log_id, 'success', '添加成功', retry_count + 1)
         await _ensure_contact_record(account_id, user_id, username)
+        await _send_greeting_to_new_friend(client, account_id, user_id, account_phone)
     except Exception as e:
         error_msg = str(e)
         logger.error(f"[ContactAdder] log_id={log_id}: AddContact @{username} 失败: {error_msg}")
@@ -434,6 +439,7 @@ async def batch_import_contacts(account_id: int, account_phone: str, import_type
                     if log_id:
                         await _update_log(log_id, 'success', '联系人导入-添加成功', 1)
                     await _ensure_contact_record(account_id, entity.id, username)
+                    await _send_greeting_to_new_friend(client, account_id, entity.id, account_phone)
                 else:
                     failed_count += 1
                     if log_id:
@@ -499,6 +505,7 @@ async def batch_import_contacts(account_id: int, account_phone: str, import_type
                         await _update_log(log_id, 'success', '联系人导入-添加成功', 1)
                     if user_id:
                         await _ensure_contact_record(account_id, user_id, phone)
+                        await _send_greeting_to_new_friend(client, account_id, user_id, account_phone)
                 elif phone_clean in phone_to_user:
                     # User exists (already a friend)
                     user = phone_to_user[phone_clean]
@@ -548,3 +555,75 @@ async def _refresh_batch_stats(batch_no: str):
                     logger.warning(f"[ContactAdder] 刷新批次统计失败: {batch_no}, status={resp.status}")
     except Exception as e:
         logger.warning(f"[ContactAdder] 刷新批次统计异常: {batch_no}, {e}")
+
+
+async def _send_greeting_to_new_friend(client, account_id: int, user_id: int, account_phone: str):
+    """Send the first valid greeting to a newly added friend.
+    account_phone is used for logging only."""
+    try:
+        # Get first enabled greeting from database
+        async with database.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT id, content, image_path FROM tg_greeting WHERE is_enabled = 1 ORDER BY sort_order ASC, id ASC LIMIT 1"
+                )
+                greeting = await cur.fetchone()
+
+        if not greeting:
+            logger.info(f"[{account_phone}] [Greeting] 无有效问候语，跳过发送")
+            return
+
+        content = greeting.get('content', '')
+        image_path = greeting.get('image_path', '')
+        beijing_tz = timezone(timedelta(hours=8))
+        sent_messages = []  # list of (msg, content_type, text_content)
+
+        # Send text first (if has text)
+        if content:
+            text_msg = await client.send_message(user_id, content)
+            sent_messages.append((text_msg, 'text', content))
+            logger.info(f"[{account_phone}] [Greeting] 文字问候语发送成功: user_id={user_id}")
+
+        # Send image separately (if has image)
+        if image_path:
+            actual_path = "/home/ubuntu/telegram-project/uploadPath" + image_path.replace("/profile", "", 1)
+            if os.path.exists(actual_path):
+                img_msg = await client.send_file(user_id, actual_path)
+                sent_messages.append((img_msg, 'photo', '[图片]'))
+                logger.info(f"[{account_phone}] [Greeting] 图片问候语发送成功: user_id={user_id}")
+            else:
+                logger.warning(f"[{account_phone}] [Greeting] 图片不存在: {actual_path}")
+
+        if not sent_messages:
+            return
+
+        # Save chat records and update statistics
+        async with database.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                last_send_time = None
+                for sent_msg, c_type, c_text in sent_messages:
+                    send_time = sent_msg.date.astimezone(beijing_tz) if sent_msg.date else datetime.now(beijing_tz)
+                    last_send_time = send_time
+                    await cur.execute(
+                        """INSERT INTO tg_chat_message
+                           (tg_account_id, chat_id, message_id, sender_user_id,
+                            is_outgoing, send_time, content_type, text_content, create_time)
+                           VALUES (%s, %s, %s, %s, 1, %s, %s, %s, NOW())
+                           ON DUPLICATE KEY UPDATE text_content = VALUES(text_content)""",
+                        (account_id, user_id, sent_msg.id, None,
+                         send_time, c_type, c_text),
+                    )
+                    await database.increment_msg_count(account_id, is_outgoing=True)
+                    await database.increment_contact_msg_count(account_id, user_id, is_outgoing=True)
+
+                # Update last_send_time
+                if last_send_time:
+                    await cur.execute(
+                        """UPDATE tg_contact SET last_send_time = %s
+                           WHERE tg_account_id = %s AND user_id = %s""",
+                        (last_send_time, account_id, user_id)
+                    )
+
+        logger.info(f"[{account_phone}] [Greeting] 新好友问候语发送完成: user_id={user_id}, 消息数={len(sent_messages)}")
+    except Exception as e:
+        logger.error(f"[{account_phone}] [Greeting] 发送问候语失败: user_id={user_id}, error={e}")
