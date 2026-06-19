@@ -186,7 +186,7 @@ async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count, 
         await _update_log(log_id, 'success', '添加成功', retry_count + 1)
         if user_id:
             await _ensure_contact_record(account_id, user_id, contact_phone)
-            await _send_greeting_to_new_friend(client, account_id, user_id, account_phone)
+            # await _send_greeting_to_new_friend(client, account_id, user_id, account_phone)  # 暂时去掉
     elif result.users:
         user_id = result.users[0].id
         logger.info(f"[ContactAdder] log_id={log_id}: 已是好友, user_id={user_id}")
@@ -251,7 +251,7 @@ async def _fallback_add_by_phone(client, log_id, account_id, normalized_phone, c
         logger.info(f"[ContactAdder] log_id={log_id}: AddContactRequest成功, user_id={user.id}")
         await _update_log(log_id, 'success', f'通过搜索添加成功(user_id={user.id})', retry_count + 1)
         await _ensure_contact_record(account_id, user.id, contact_phone)
-        await _send_greeting_to_new_friend(client, account_id, user.id, account_phone)
+        # await _send_greeting_to_new_friend(client, account_id, user.id, account_phone)  # 暂时去掉
         return True
     except Exception as e:
         logger.error(f"[ContactAdder] log_id={log_id}: AddContactRequest失败: {e}")
@@ -312,7 +312,7 @@ async def _add_by_username(client, log_id, account_id, contact_username, retry_c
         logger.info(f"[ContactAdder] log_id={log_id}: @{username} 添加成功, user_id={user_id}")
         await _update_log(log_id, 'success', '添加成功', retry_count + 1)
         await _ensure_contact_record(account_id, user_id, username)
-        await _send_greeting_to_new_friend(client, account_id, user_id, account_phone)
+        # await _send_greeting_to_new_friend(client, account_id, user_id, account_phone)  # 暂时去掉
     except Exception as e:
         error_msg = str(e)
         logger.error(f"[ContactAdder] log_id={log_id}: AddContact @{username} 失败: {error_msg}")
@@ -439,7 +439,7 @@ async def batch_import_contacts(account_id: int, account_phone: str, import_type
                     if log_id:
                         await _update_log(log_id, 'success', '联系人导入-添加成功', 1)
                     await _ensure_contact_record(account_id, entity.id, username)
-                    await _send_greeting_to_new_friend(client, account_id, entity.id, account_phone)
+                    # await _send_greeting_to_new_friend(client, account_id, entity.id, account_phone)  # 暂时去掉
                 else:
                     failed_count += 1
                     if log_id:
@@ -505,7 +505,7 @@ async def batch_import_contacts(account_id: int, account_phone: str, import_type
                         await _update_log(log_id, 'success', '联系人导入-添加成功', 1)
                     if user_id:
                         await _ensure_contact_record(account_id, user_id, phone)
-                        await _send_greeting_to_new_friend(client, account_id, user_id, account_phone)
+                        # await _send_greeting_to_new_friend(client, account_id, user_id, account_phone)  # 暂时去掉
                 elif phone_clean in phone_to_user:
                     # User exists (already a friend)
                     user = phone_to_user[phone_clean]
