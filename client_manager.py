@@ -3,6 +3,7 @@ import os
 import json
 import asyncio
 import logging
+import random
 from telethon import TelegramClient, events
 from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError,
@@ -60,6 +61,40 @@ def _build_device_kwargs(data: dict) -> dict:
         kwargs["lang_code"] = data["lang_pack"]
     if data.get("system_lang_pack"):
         kwargs["system_lang_code"] = data["system_lang_pack"]
+    return kwargs
+
+
+def _generate_random_fingerprint() -> dict:
+    """Generate a random device fingerprint for Telethon client."""
+    devices = [
+        {"device_model": "Samsung Galaxy S21", "system_version": "Android 12"},
+        {"device_model": "Samsung Galaxy S22", "system_version": "Android 13"},
+        {"device_model": "Samsung Galaxy S23", "system_version": "Android 14"},
+        {"device_model": "Samsung Galaxy A54", "system_version": "Android 13"},
+        {"device_model": "Xiaomi 13", "system_version": "Android 13"},
+        {"device_model": "Xiaomi 14", "system_version": "Android 14"},
+        {"device_model": "HUAWEI P60", "system_version": "Android 13"},
+        {"device_model": "OPPO Find X6", "system_version": "Android 13"},
+        {"device_model": "vivo X90", "system_version": "Android 13"},
+        {"device_model": "OnePlus 11", "system_version": "Android 13"},
+        {"device_model": "Google Pixel 7", "system_version": "Android 13"},
+        {"device_model": "Google Pixel 8", "system_version": "Android 14"},
+        {"device_model": "iPhone 14 Pro", "system_version": "iOS 16.5"},
+        {"device_model": "iPhone 15", "system_version": "iOS 17.0"},
+        {"device_model": "iPhone 13", "system_version": "iOS 16.3"},
+    ]
+    app_versions = ["10.1.2", "10.2.0", "10.3.1", "10.4.0", "10.5.0", "10.6.3", "10.7.0", "10.8.0"]
+    lang_codes = ["en", "zh", "ru", "ar", "es", "pt", "vi", "th"]
+    system_lang_codes = ["en-US", "zh-CN", "zh-TW", "ru-RU", "ar-SA", "es-ES", "pt-BR", "vi-VN", "th-TH"]
+
+    device = random.choice(devices)
+    kwargs = {
+        "device_model": device["device_model"],
+        "system_version": device["system_version"],
+        "app_version": random.choice(app_versions),
+        "lang_code": random.choice(lang_codes),
+        "system_lang_code": random.choice(system_lang_codes),
+    }
     return kwargs
 
 
@@ -121,6 +156,22 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
         api_id = None
         api_hash = None
         device_kwargs = {}
+        # No .json file: try to load fingerprint from database
+        account_row_fp = await database.get_account_by_phone(phone)
+        if account_row_fp and account_row_fp.get('device_model'):
+            device_kwargs = _build_device_kwargs({
+                'device_model': account_row_fp.get('device_model'),
+                'system_version': account_row_fp.get('system_version'),
+                'app_version': account_row_fp.get('app_version'),
+                'lang_pack': account_row_fp.get('lang_code'),
+                'system_lang_pack': account_row_fp.get('system_lang_code'),
+            })
+            logger.info(f"Account {phone}: no .json file, loaded fingerprint from DB: {device_kwargs}")
+        else:
+            # Generate random fingerprint and save to DB
+            device_kwargs = _generate_random_fingerprint()
+            logger.info(f"Account {phone}: no .json file and no DB fingerprint, generated random: {device_kwargs}")
+            await database.save_device_fingerprint(phone, device_kwargs)
 
     # Use default api_id/api_hash if not available from JSON
     if not api_id or not api_hash:
@@ -304,7 +355,8 @@ async def login_batch(batch_no: str) -> list[dict]:
 
 async def login_all_db_accounts() -> list[dict]:
     """Re-login all accounts that were online (used on startup).
-    Reads accounts from database that have status 'online' and tries to log them in."""
+    Reads accounts from database that have status 'online' and tries to log them in.
+    Skips accounts marked as restricted (is_restricted=1)."""
     accounts = await database.get_all_accounts()
     online_accounts = [a for a in accounts if a.get("status") == "online"]
     if not online_accounts:
@@ -314,6 +366,10 @@ async def login_all_db_accounts() -> list[dict]:
     results = []
     for acc in online_accounts:
         phone = acc["phone"]
+        if acc.get("is_restricted"):
+            logger.info(f"Account {phone} is restricted, skipping auto-login")
+            results.append({"phone": phone, "success": False, "error": "account restricted"})
+            continue
         if _has_account_files(phone):
             result = await login_account_by_phone(phone)
             results.append(result)
@@ -327,7 +383,8 @@ async def login_all_db_accounts() -> list[dict]:
 
 
 async def login_all_waiting_accounts() -> list[dict]:
-    """Login all accounts with status waiting/offline/failed."""
+    """Login all accounts with status waiting/offline/failed.
+    Skips accounts marked as restricted (is_restricted=1)."""
     accounts = await database.get_all_accounts()
     waiting = [a for a in accounts if a.get("status") in ("waiting", "offline", "failed")]
 
@@ -339,6 +396,10 @@ async def login_all_waiting_accounts() -> list[dict]:
     for acc in waiting:
         phone = acc["phone"]
         if phone in active_clients:
+            continue
+        if acc.get("is_restricted"):
+            logger.info(f"Account {phone} is restricted, skipping login")
+            results.append({"phone": phone, "success": False, "error": "account restricted"})
             continue
         if _has_account_files(phone):
             result = await login_account_by_phone(phone)

@@ -427,3 +427,51 @@ async def update_import_account_status(phone: str, status: str, reason: str = No
                 logger.info(f"Updated import account {phone} to {status} (batch: {batch_no})")
     except Exception as e:
         logger.error(f"Failed to update import account status for {phone}: {e}")
+
+
+async def save_device_fingerprint(phone: str, fingerprint: dict):
+    """Save device fingerprint to the account record in database."""
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""UPDATE `{TABLE_NAME}` SET
+                        device_model = %s,
+                        system_version = %s,
+                        app_version = %s,
+                        lang_code = %s,
+                        system_lang_code = %s,
+                        update_time = NOW()
+                    WHERE phone = %s""",
+                    (
+                        fingerprint.get('device_model'),
+                        fingerprint.get('system_version'),
+                        fingerprint.get('app_version'),
+                        fingerprint.get('lang_code'),
+                        fingerprint.get('system_lang_code'),
+                        phone,
+                    )
+                )
+                if cur.rowcount == 0:
+                    # Account doesn't exist yet, insert with fingerprint
+                    await cur.execute(
+                        f"""INSERT INTO `{TABLE_NAME}` (phone, device_model, system_version, app_version, lang_code, system_lang_code)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                device_model = VALUES(device_model),
+                                system_version = VALUES(system_version),
+                                app_version = VALUES(app_version),
+                                lang_code = VALUES(lang_code),
+                                system_lang_code = VALUES(system_lang_code)""",
+                        (
+                            phone,
+                            fingerprint.get('device_model'),
+                            fingerprint.get('system_version'),
+                            fingerprint.get('app_version'),
+                            fingerprint.get('lang_code'),
+                            fingerprint.get('system_lang_code'),
+                        )
+                    )
+                logger.info(f"Saved device fingerprint for {phone}: {fingerprint.get('device_model')}")
+    except Exception as e:
+        logger.error(f"Failed to save device fingerprint for {phone}: {e}")
