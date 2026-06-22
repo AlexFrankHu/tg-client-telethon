@@ -356,13 +356,16 @@ async def login_batch(batch_no: str) -> list[dict]:
 async def login_all_db_accounts() -> list[dict]:
     """Re-login all accounts that were online (used on startup).
     Reads accounts from database that have status 'online' and tries to log them in.
-    Skips accounts marked as restricted (is_restricted=1)."""
+    Skips accounts marked as restricted (is_restricted=1).
+    Uses concurrent batch login with semaphore to speed up startup."""
     accounts = await database.get_all_accounts()
     online_accounts = [a for a in accounts if a.get("status") == "online"]
     if not online_accounts:
         logger.info("No previously online accounts to re-login")
         return []
 
+    # Filter accounts to login
+    to_login = []
     results = []
     for acc in online_accounts:
         phone = acc["phone"]
@@ -371,13 +374,38 @@ async def login_all_db_accounts() -> list[dict]:
             results.append({"phone": phone, "success": False, "error": "account restricted"})
             continue
         if _has_account_files(phone):
-            result = await login_account_by_phone(phone)
-            results.append(result)
-            await asyncio.sleep(1)
+            to_login.append(acc)
         else:
             logger.warning(f"Account {phone} was online but files missing, setting offline")
             await database.update_account_status(phone, "offline")
             results.append({"phone": phone, "success": False, "error": "files missing"})
+
+    if not to_login:
+        return results
+
+    # Concurrent login with semaphore (max 15 concurrent)
+    semaphore = asyncio.Semaphore(15)
+    logger.info(f"Starting concurrent login for {len(to_login)} accounts (max 15 concurrent)")
+
+    async def _login_one(acc):
+        phone = acc["phone"]
+        async with semaphore:
+            result = await login_account_by_phone(phone)
+            await asyncio.sleep(0.5)
+            return result
+
+    login_results = await asyncio.gather(*[_login_one(acc) for acc in to_login], return_exceptions=True)
+
+    for i, res in enumerate(login_results):
+        if isinstance(res, Exception):
+            phone = to_login[i]["phone"]
+            logger.error(f"Account {phone} login exception: {res}")
+            results.append({"phone": phone, "success": False, "error": str(res)})
+        else:
+            results.append(res)
+
+    success_count = sum(1 for r in results if r.get("success"))
+    logger.info(f"Concurrent login complete: {success_count}/{len(results)} accounts online")
 
     return results
 

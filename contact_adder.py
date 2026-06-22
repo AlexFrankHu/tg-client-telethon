@@ -198,7 +198,11 @@ async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count, 
         # retry_contacts means user exists but import was rate-limited, try fallback
         fallback_ok = await _fallback_add_by_phone(client, log_id, account_id, normalized_phone, contact_phone, retry_count, account_phone)
         if not fallback_ok:
-            await _update_log(log_id, 'pending', f'ImportContacts被限制,搜索也失败,将重试', retry_count + 1)
+            new_retry = retry_count + 1
+            if new_retry >= MAX_RETRY_COUNT:
+                await _update_log(log_id, 'failed', f'超过最大重试次数({MAX_RETRY_COUNT}): ImportContacts被限制且搜索失败', new_retry)
+            else:
+                await _update_log(log_id, 'pending', f'ImportContacts被限制,搜索也失败,将重试', new_retry)
     else:
         # Fallback: try to find the user by phone and add via AddContactRequest
         logger.warning(f"[ContactAdder] log_id={log_id}: ImportContacts返回空, 尝试通过手机号搜索用户")
