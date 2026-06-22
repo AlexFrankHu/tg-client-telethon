@@ -390,7 +390,12 @@ async def login_all_db_accounts() -> list[dict]:
     async def _login_one(acc):
         phone = acc["phone"]
         async with semaphore:
-            result = await login_account_by_phone(phone)
+            try:
+                result = await asyncio.wait_for(login_account_by_phone(phone), timeout=60)
+            except asyncio.TimeoutError:
+                logger.error(f"Account {phone} login timed out (60s)")
+                await database.update_account_status(phone, "failed")
+                result = {"phone": phone, "success": False, "error": "login timeout (60s)"}
             await asyncio.sleep(0.5)
             return result
 
