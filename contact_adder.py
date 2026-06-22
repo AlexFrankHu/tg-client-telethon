@@ -75,7 +75,7 @@ async def _process_pending_logs():
     affected_batch_nos = set()
 
     async def _process_account(account_phone, logs):
-        """Process all pending contacts for one account via batch ImportContacts."""
+        """Process all pending contacts for one account, respecting original add method."""
         async with semaphore:
             # Check if account is online and connected
             if account_phone not in client_manager.active_clients:
@@ -91,34 +91,40 @@ async def _process_pending_logs():
                     return set()
 
             batch_nos = set()
-            # Separate phone-based and username-based
-            phone_logs = []
-            username_logs = []
+            # Separate by method: 联系人导入(has contact_batch_no) vs 逐个添加(no contact_batch_no)
+            batch_import_logs = []  # 联系人导入 → batch ImportContacts
+            individual_logs = []   # 逐个添加 → one by one
+
             for log_entry in logs:
-                contact_phone = log_entry.get('contact_phone')
-                contact_username = log_entry.get('contact_username')
-                is_username = bool(contact_username and not contact_phone)
-                if is_username:
-                    username_logs.append(log_entry)
+                if log_entry.get('contact_batch_no'):
+                    batch_import_logs.append(log_entry)
                 else:
-                    phone_logs.append(log_entry)
+                    individual_logs.append(log_entry)
 
-            # Batch process phone-based contacts via single ImportContactsRequest
-            if phone_logs:
-                batch_nos.update(await _batch_add_phones(client, account_phone, phone_logs))
+            # 联系人导入: batch ImportContacts (one API call for all)
+            if batch_import_logs:
+                batch_nos.update(await _batch_add_phones(client, account_phone, batch_import_logs))
 
-            # Process username-based contacts one by one
-            for log_entry in username_logs:
+            # 逐个添加: process one by one
+            for log_entry in individual_logs:
                 log_id = log_entry['id']
                 account_id = log_entry['account_id']
+                contact_phone = log_entry.get('contact_phone')
                 contact_username = log_entry.get('contact_username')
                 retry_count = log_entry.get('retry_count') or 0
-                contact_batch_no = log_entry.get('contact_batch_no')
+                is_username = bool(contact_username and not contact_phone)
+
                 try:
-                    await asyncio.wait_for(
-                        _add_by_username(client, log_id, account_id, contact_username, retry_count, account_phone),
-                        timeout=60
-                    )
+                    if is_username:
+                        await asyncio.wait_for(
+                            _add_by_username(client, log_id, account_id, contact_username, retry_count, account_phone),
+                            timeout=60
+                        )
+                    else:
+                        await asyncio.wait_for(
+                            _add_by_phone(client, log_id, account_id, contact_phone, retry_count, account_phone),
+                            timeout=60
+                        )
                 except asyncio.TimeoutError:
                     await _update_log(log_id, 'pending', '操作超时将重试', retry_count + 1)
                 except Exception as e:
@@ -130,8 +136,7 @@ async def _process_pending_logs():
                         await _update_log(log_id, 'failed', f'超过最大重试次数: {error_msg[:200]}', new_retry)
                     else:
                         await _update_log(log_id, 'failed', error_msg[:300], new_retry)
-                if contact_batch_no:
-                    batch_nos.add(contact_batch_no)
+                await asyncio.sleep(2)  # rate-limit for individual adds
 
             return batch_nos
 
