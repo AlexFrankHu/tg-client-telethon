@@ -203,7 +203,7 @@ async def login_account_by_phone(phone: str, no_proxy: bool = False) -> dict:
         proxy_url = None
 
     try:
-        client = TelegramClient(session_path, api_id, api_hash, **device_kwargs, **proxy_kwargs)
+        client = TelegramClient(session_path, api_id, api_hash, timeout=10, connection_retries=2, retry_delay=1, **device_kwargs, **proxy_kwargs)
         await client.connect()
 
         if not await client.is_user_authorized():
