@@ -15,7 +15,8 @@ import client_manager
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL = 60  # seconds
+POLL_INTERVAL = 15  # seconds
+CONCURRENCY = 15  # max concurrent accounts processing
 MAX_RETRY_COUNT = 30
 
 # Network-related error keywords that should trigger retry
@@ -50,7 +51,7 @@ async def poll_contact_adder():
 
 
 async def _process_pending_logs():
-    """Fetch pending assign logs and try to add contacts."""
+    """Fetch pending assign logs, group by account, and process concurrently."""
     # First, mark any stuck records (retry_count >= MAX) as failed
     await _mark_exceeded_as_failed()
 
@@ -59,88 +60,184 @@ async def _process_pending_logs():
         return
 
     logger.info(f"[ContactAdder] Found {len(pending_logs)} pending assign logs")
+
+    # Group by account_phone
+    account_groups = {}
+    for log_entry in pending_logs:
+        account_phone = log_entry['account_phone']
+        if account_phone not in account_groups:
+            account_groups[account_phone] = []
+        account_groups[account_phone].append(log_entry)
+
+    logger.info(f"[ContactAdder] Grouped into {len(account_groups)} accounts, processing with concurrency={CONCURRENCY}")
+
+    semaphore = asyncio.Semaphore(CONCURRENCY)
     affected_batch_nos = set()
 
-    for log_entry in pending_logs:
-        try:
-            log_id = log_entry['id']
-            account_phone = log_entry['account_phone']
-            account_id = log_entry['account_id']
-            contact_phone = log_entry.get('contact_phone')
-            contact_username = log_entry.get('contact_username')
-            contact_batch_no = log_entry.get('contact_batch_no')
-            retry_count = log_entry.get('retry_count') or 0
-
-            # Determine if this is a username-based or phone-based add
-            is_username = bool(contact_username and not contact_phone)
-            contact_display = contact_username if is_username else contact_phone
-
+    async def _process_account(account_phone, logs):
+        """Process all pending contacts for one account via batch ImportContacts."""
+        async with semaphore:
             # Check if account is online and connected
             if account_phone not in client_manager.active_clients:
-                continue
+                return set()
 
             client = client_manager.active_clients[account_phone]
-
-            # Try to reconnect if client is disconnected
             if not client.is_connected():
-                logger.warning(f"[ContactAdder] log_id={log_id}: {account_phone} 已断开连接，尝试重连")
                 try:
                     await asyncio.wait_for(client.connect(), timeout=15)
                     logger.info(f"[ContactAdder] {account_phone} 重连成功")
                 except Exception as e:
-                    logger.warning(f"[ContactAdder] {account_phone} 重连失败: {e}，跳过")
-                    continue
+                    logger.warning(f"[ContactAdder] {account_phone} 重连失败: {e}，跳过该账号所有任务")
+                    return set()
 
-            logger.info(f"[ContactAdder] 处理 log_id={log_id}: {account_phone} -> {contact_display} (retry={retry_count}, username={is_username})")
-
-            # Try to add contact with timeout to prevent hanging
-            try:
+            batch_nos = set()
+            # Separate phone-based and username-based
+            phone_logs = []
+            username_logs = []
+            for log_entry in logs:
+                contact_phone = log_entry.get('contact_phone')
+                contact_username = log_entry.get('contact_username')
+                is_username = bool(contact_username and not contact_phone)
                 if is_username:
+                    username_logs.append(log_entry)
+                else:
+                    phone_logs.append(log_entry)
+
+            # Batch process phone-based contacts via single ImportContactsRequest
+            if phone_logs:
+                batch_nos.update(await _batch_add_phones(client, account_phone, phone_logs))
+
+            # Process username-based contacts one by one
+            for log_entry in username_logs:
+                log_id = log_entry['id']
+                account_id = log_entry['account_id']
+                contact_username = log_entry.get('contact_username')
+                retry_count = log_entry.get('retry_count') or 0
+                contact_batch_no = log_entry.get('contact_batch_no')
+                try:
                     await asyncio.wait_for(
                         _add_by_username(client, log_id, account_id, contact_username, retry_count, account_phone),
                         timeout=60
                     )
-                else:
-                    await asyncio.wait_for(
-                        _add_by_phone(client, log_id, account_id, contact_phone, retry_count, account_phone),
-                        timeout=60
-                    )
+                except asyncio.TimeoutError:
+                    await _update_log(log_id, 'pending', '操作超时将重试', retry_count + 1)
+                except Exception as e:
+                    error_msg = str(e)
+                    new_retry = retry_count + 1
+                    if _is_network_error(error_msg) and new_retry < MAX_RETRY_COUNT:
+                        await _update_log(log_id, 'pending', f'网络异常将重试: {error_msg[:200]}', new_retry)
+                    elif new_retry >= MAX_RETRY_COUNT:
+                        await _update_log(log_id, 'failed', f'超过最大重试次数: {error_msg[:200]}', new_retry)
+                    else:
+                        await _update_log(log_id, 'failed', error_msg[:300], new_retry)
+                if contact_batch_no:
+                    batch_nos.add(contact_batch_no)
 
-            except asyncio.TimeoutError:
-                new_retry = retry_count + 1
-                logger.error(f"[ContactAdder] log_id={log_id}: 操作超时(60s)")
-                await _update_log(log_id, 'pending', '操作超时将重试', new_retry)
+            return batch_nos
 
-            except asyncio.CancelledError:
-                logger.warning(f"[ContactAdder] log_id={log_id}: CancelledError，跳过")
-                continue
+    # Run all accounts concurrently
+    tasks = [_process_account(phone, logs) for phone, logs in account_groups.items()]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            except Exception as e:
-                error_msg = str(e)
-                new_retry = retry_count + 1
-                logger.error(f"[ContactAdder] log_id={log_id}: 添加异常: {error_msg}")
-
-                if _is_network_error(error_msg) and new_retry < MAX_RETRY_COUNT:
-                    await _update_log(log_id, 'pending', f'网络异常将重试: {error_msg[:200]}', new_retry)
-                elif new_retry >= MAX_RETRY_COUNT:
-                    await _update_log(log_id, 'failed', f'超过最大重试次数({MAX_RETRY_COUNT}): {error_msg[:200]}', new_retry)
-                else:
-                    await _update_log(log_id, 'failed', error_msg[:300], new_retry)
-
-            if contact_batch_no:
-                affected_batch_nos.add(contact_batch_no)
-
-            await asyncio.sleep(2)  # rate-limit between add operations
-
-        except asyncio.CancelledError:
-            logger.warning(f"[ContactAdder] CancelledError in log processing loop, continuing")
-            continue
-        except Exception as e:
-            logger.error(f"[ContactAdder] 处理 log_id={log_entry.get('id')} 异常: {e}")
+    for r in results:
+        if isinstance(r, set):
+            affected_batch_nos.update(r)
+        elif isinstance(r, Exception):
+            logger.error(f"[ContactAdder] Account task exception: {r}")
 
     # Refresh stats for all affected contact batches
     for batch_no in affected_batch_nos:
         await _refresh_batch_stats(batch_no)
+
+
+async def _batch_add_phones(client, account_phone, phone_logs):
+    """Batch add all phone contacts for one account using a single ImportContactsRequest."""
+    affected_batch_nos = set()
+    account_id = phone_logs[0]['account_id']
+
+    # Build InputPhoneContact list
+    input_contacts = []
+    log_map = {}  # client_id -> log_entry
+    for i, log_entry in enumerate(phone_logs):
+        contact_phone = log_entry.get('contact_phone', '').strip()
+        if not contact_phone:
+            continue
+        normalized = contact_phone if contact_phone.startswith("+") else "+" + contact_phone
+        input_contacts.append(InputPhoneContact(
+            client_id=i,
+            phone=normalized,
+            first_name=normalized,
+            last_name=""
+        ))
+        log_map[i] = log_entry
+        if log_entry.get('contact_batch_no'):
+            affected_batch_nos.add(log_entry['contact_batch_no'])
+
+    if not input_contacts:
+        return affected_batch_nos
+
+    logger.info(f"[ContactAdder] {account_phone}: 批量ImportContacts {len(input_contacts)} 个联系人")
+
+    try:
+        result = await asyncio.wait_for(
+            client(ImportContactsRequest(input_contacts)),
+            timeout=90
+        )
+        logger.info(f"[ContactAdder] {account_phone}: ImportContacts结果: imported={len(result.imported)}, users={len(result.users)}, retry_contacts={len(result.retry_contacts)}")
+
+        # Build mappings
+        imported_client_ids = {imp.client_id for imp in result.imported}
+        phone_to_user = {}
+        for user in result.users:
+            if user.phone:
+                phone_to_user[user.phone.replace("+", "")] = user
+        retry_client_ids = set(result.retry_contacts)
+
+        # Process results for each contact
+        for client_id, log_entry in log_map.items():
+            log_id = log_entry['id']
+            contact_phone = log_entry.get('contact_phone', '').strip()
+            phone_clean = contact_phone.replace("+", "")
+            retry_count = log_entry.get('retry_count') or 0
+
+            if client_id in imported_client_ids:
+                user = phone_to_user.get(phone_clean)
+                user_id = user.id if user else None
+                await _update_log(log_id, 'success', '批量导入-添加成功', retry_count + 1)
+                if user_id:
+                    await _ensure_contact_record(account_id, user_id, contact_phone)
+            elif phone_clean in phone_to_user:
+                user = phone_to_user[phone_clean]
+                await _update_log(log_id, 'skipped', '批量导入-已是好友', retry_count + 1)
+                await _ensure_contact_record(account_id, user.id, contact_phone)
+            elif client_id in retry_client_ids:
+                new_retry = retry_count + 1
+                if new_retry >= MAX_RETRY_COUNT:
+                    await _update_log(log_id, 'failed', f'超过最大重试次数({MAX_RETRY_COUNT}): ImportContacts被限制', new_retry)
+                else:
+                    await _update_log(log_id, 'pending', '批量导入-Telegram限制稍后重试', new_retry)
+            else:
+                await _update_log(log_id, 'failed', '批量导入-该号码未注册Telegram', retry_count + 1)
+
+    except asyncio.TimeoutError:
+        logger.error(f"[ContactAdder] {account_phone}: 批量ImportContacts超时(90s)")
+        for client_id, log_entry in log_map.items():
+            retry_count = log_entry.get('retry_count') or 0
+            await _update_log(log_entry['id'], 'pending', '批量导入超时将重试', retry_count + 1)
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"[ContactAdder] {account_phone}: 批量ImportContacts异常: {error_msg}")
+        for client_id, log_entry in log_map.items():
+            retry_count = log_entry.get('retry_count') or 0
+            new_retry = retry_count + 1
+            if _is_network_error(error_msg) and new_retry < MAX_RETRY_COUNT:
+                await _update_log(log_entry['id'], 'pending', f'批量导入网络异常: {error_msg[:200]}', new_retry)
+            elif new_retry >= MAX_RETRY_COUNT:
+                await _update_log(log_entry['id'], 'failed', f'超过最大重试次数: {error_msg[:200]}', new_retry)
+            else:
+                await _update_log(log_entry['id'], 'failed', f'批量导入异常: {error_msg[:200]}', new_retry)
+
+    return affected_batch_nos
 
 
 async def _add_by_phone(client, log_id, account_id, contact_phone, retry_count, account_phone=''):
