@@ -51,6 +51,9 @@ async def poll_contact_adder():
 
 async def _process_pending_logs():
     """Fetch pending assign logs and try to add contacts."""
+    # First, mark any stuck records (retry_count >= MAX) as failed
+    await _mark_exceeded_as_failed()
+
     pending_logs = await _get_pending_logs()
     if not pending_logs:
         return
@@ -321,6 +324,25 @@ async def _add_by_username(client, log_id, account_id, contact_username, retry_c
         error_msg = str(e)
         logger.error(f"[ContactAdder] log_id={log_id}: AddContact @{username} 失败: {error_msg}")
         raise  # let outer handler deal with it
+
+
+async def _mark_exceeded_as_failed():
+    """Mark all pending records with retry_count >= MAX_RETRY_COUNT as failed."""
+    try:
+        async with database.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE tg_contact_assign_log SET status = 'failed', "
+                    "remark = CONCAT(IFNULL(remark,''), ' | 超过最大重试次数(', %s, ')') "
+                    "WHERE status = 'pending' AND retry_count >= %s",
+                    (MAX_RETRY_COUNT, MAX_RETRY_COUNT),
+                )
+                affected = cur.rowcount
+                await conn.commit()
+                if affected > 0:
+                    logger.info(f"[ContactAdder] Marked {affected} stuck records (retry>={MAX_RETRY_COUNT}) as failed")
+    except Exception as e:
+        logger.error(f"[ContactAdder] Error marking exceeded records: {e}")
 
 
 async def _get_pending_logs() -> list:
